@@ -9,9 +9,11 @@ from PyQt6.QtWidgets import (
     QApplication,
     QCheckBox,
     QComboBox,
+    QFileDialog,
     QHBoxLayout,
     QLabel,
     QMenu,
+    QMessageBox,
     QProgressBar,
     QPushButton,
     QScrollArea,
@@ -318,10 +320,16 @@ class ChatMessage(QWidget):
         menu.setStyleSheet("""
             QMenu { background: #2a2a3a; color: #ddd; border: 1px solid #555; }
             QMenu::item:selected { background: #444; }
+            QMenu::separator { height: 1px; background: #555; margin: 4px 0; }
         """)
         copy_orig = menu.addAction(t("copy_original"))
         copy_trans = menu.addAction(t("copy_translation"))
         copy_all = menu.addAction(t("copy_all"))
+        menu.addSeparator()
+        export_menu = menu.addMenu(t("export_menu"))
+        export_orig = export_menu.addAction(t("export_original"))
+        export_trans = export_menu.addAction(t("export_translation"))
+        export_both = export_menu.addAction(t("export_all"))
         menu.addSeparator()
         clear_list = menu.addAction(t("clear_list"))
         action = menu.exec(event.globalPos())
@@ -335,6 +343,11 @@ class ChatMessage(QWidget):
             overlay = self.window()
             if hasattr(overlay, '_on_clear'):
                 overlay._on_clear()
+        elif action in (export_orig, export_trans, export_both):
+            mode = {export_orig: "original", export_trans: "translation", export_both: "both"}[action]
+            overlay = self.window()
+            if hasattr(overlay, "export_messages"):
+                overlay.export_messages(mode, parent=self)
 
 
 def _escape(text: str) -> str:
@@ -1190,6 +1203,54 @@ class SubtitleOverlay(QWidget):
         ChatMessage._current_style = s
         for msg in self._messages.values():
             msg.apply_style(s)
+
+    def export_messages(self, mode: str, parent=None):
+        """Export captured messages to a .txt file.
+
+        mode: "original" | "translation" | "both"
+        """
+        if not self._messages:
+            QMessageBox.information(parent or self, "LiveTranslate", t("export_empty"))
+            return
+
+        from datetime import datetime
+        suffix = {"original": "original", "translation": "translation", "both": "all"}.get(mode, "all")
+        default_name = f"livetrans_{datetime.now().strftime('%Y%m%d_%H%M%S')}_{suffix}.txt"
+        path, _ = QFileDialog.getSaveFileName(
+            parent or self,
+            t("export_dialog_title"),
+            default_name,
+            t("export_filter"),
+        )
+        if not path:
+            return
+
+        lines = []
+        for msg_id in sorted(self._messages.keys()):
+            msg = self._messages[msg_id]
+            ts = msg._timestamp
+            orig = msg._original or ""
+            trans = msg._translated or ""
+            if mode == "original":
+                lines.append(f"[{ts}] {orig}")
+            elif mode == "translation":
+                if trans:
+                    lines.append(f"[{ts}] {trans}")
+            else:
+                lines.append(f"[{ts}] {orig}")
+                if trans:
+                    lines.append(f"  -> {trans}")
+                lines.append("")
+
+        try:
+            with open(path, "w", encoding="utf-8") as f:
+                f.write("\n".join(lines).rstrip() + "\n")
+        except OSError as e:
+            QMessageBox.critical(
+                parent or self,
+                "LiveTranslate",
+                t("export_failed").format(error=str(e)),
+            )
 
     # Thread-safe public API
     def add_message(self, msg_id, timestamp, original, source_lang, asr_ms):

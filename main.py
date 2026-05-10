@@ -1567,6 +1567,20 @@ def main():
     menu.addMenu(asr_lang_menu)
     menu.addSeparator()
 
+    # --- Export submenu ---
+    export_menu = QMenu(t("export_menu"))
+    export_orig_action = QAction(t("export_original"))
+    export_trans_action = QAction(t("export_translation"))
+    export_all_action = QAction(t("export_all"))
+    export_orig_action.triggered.connect(lambda: overlay.export_messages("original", parent=panel))
+    export_trans_action.triggered.connect(lambda: overlay.export_messages("translation", parent=panel))
+    export_all_action.triggered.connect(lambda: overlay.export_messages("both", parent=panel))
+    export_menu.addAction(export_orig_action)
+    export_menu.addAction(export_trans_action)
+    export_menu.addAction(export_all_action)
+    menu.addMenu(export_menu)
+    menu.addSeparator()
+
     # --- Quit ---
     quit_action = QAction(t("quit"))
 
