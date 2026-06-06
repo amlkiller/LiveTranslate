@@ -88,8 +88,37 @@ if (-not $PythonCmd) {
 # ── Step 2: Create venv ──
 Write-Step "Creating virtual environment..."
 
-if (Test-Path ".venv\Scripts\python.exe") {
-    Write-Ok "venv already exists, skipping"
+# Validate existing venv: even if python.exe is present, the venv could be
+# half-built, created with a different Python, or corrupted (see issue #18).
+# If it's broken, recreate it; otherwise reuse it.
+function Test-VenvHealthy {
+    param([string]$VenvPythonExe)
+    if (-not (Test-Path $VenvPythonExe)) { return $false }
+    try {
+        $ver = & $VenvPythonExe --version 2>&1
+        if ($LASTEXITCODE -ne 0) { return $false }
+        if ($ver -notmatch "Python \d+\.\d+") { return $false }
+        return $true
+    } catch {
+        return $false
+    }
+}
+
+$VenvPython = ".venv\Scripts\python.exe"
+if (Test-Path ".venv") {
+    if (Test-VenvHealthy $VenvPython) {
+        Write-Ok "Existing venv is healthy, reusing"
+    } else {
+        Write-Warn "Existing venv is broken or incomplete, recreating..."
+        Remove-Item -Recurse -Force .venv -ErrorAction SilentlyContinue
+        & $PythonCmd -m venv .venv
+        if ($LASTEXITCODE -ne 0) {
+            Write-Err "Failed to create venv"
+            Read-Host "Press Enter to exit"
+            exit 1
+        }
+        Write-Ok "Created .venv"
+    }
 } else {
     & $PythonCmd -m venv .venv
     if ($LASTEXITCODE -ne 0) {
@@ -106,7 +135,11 @@ $Python = ".venv\Scripts\python.exe"
 # Upgrade pip first
 Write-Step "Upgrading pip..."
 & $Python -m pip install --upgrade pip --quiet
-Write-Ok "pip upgraded"
+if ($LASTEXITCODE -ne 0) {
+    Write-Warn "pip upgrade failed (non-critical, continuing with current pip)"
+} else {
+    Write-Ok "pip upgraded"
+}
 
 # ── Step 3: Detect GPU ──
 Write-Step "Detecting GPU..."
