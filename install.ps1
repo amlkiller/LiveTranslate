@@ -55,7 +55,7 @@ function Find-Python {
 $PythonCmd = Find-Python
 
 if (-not $PythonCmd) {
-    Write-Warn "Python 3.10+ not found"
+    Write-Warn "No supported Python (3.10-3.12) found"
 
     # Try to install via winget
     $hasWinget = $false
@@ -87,12 +87,12 @@ if (-not $PythonCmd) {
                 exit 1
             }
         } else {
-            Write-Err "Python 3.10+ is required. Please install from https://www.python.org/downloads/"
+            Write-Err "Python 3.10-3.12 is required. Please install from https://www.python.org/downloads/"
             Read-Host "Press Enter to exit"
             exit 1
         }
     } else {
-        Write-Err "Python 3.10+ not found and winget is not available."
+        Write-Err "Python 3.10-3.12 not found and winget is not available."
         Write-Host "  Please install Python from https://www.python.org/downloads/" -ForegroundColor Yellow
         Write-Host "  Make sure to check 'Add Python to PATH' during installation." -ForegroundColor Yellow
         Read-Host "Press Enter to exit"
