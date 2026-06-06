@@ -19,17 +19,32 @@ Write-Host "========================================" -ForegroundColor Magenta
 Write-Step "Detecting Python..."
 
 function Find-Python {
+    # 3.13+ rejected: no ctranslate2 cp313 wheels (#15), strict SSL breaks torch.hub (#20)
+    foreach ($v in @("3.12", "3.11", "3.10")) {
+        try {
+            $exe = & py "-$v" -c "import sys; print(sys.executable)" 2>&1
+            if ($LASTEXITCODE -eq 0 -and $exe -and (Test-Path $exe.Trim())) {
+                $exe = $exe.Trim()
+                $ver = & $exe --version 2>&1
+                Write-Ok "Found $ver ($exe)"
+                return $exe
+            }
+        } catch {}
+    }
+    # Fall back to plain commands, rejecting unsupported versions.
     foreach ($cmd in @("python", "python3", "py")) {
         try {
             $ver = & $cmd --version 2>&1
             if ($ver -match "Python (\d+)\.(\d+)") {
                 $major = [int]$Matches[1]
                 $minor = [int]$Matches[2]
-                if ($major -eq 3 -and $minor -ge 10) {
+                if ($major -eq 3 -and $minor -ge 10 -and $minor -le 12) {
                     Write-Ok "Found $ver ($cmd)"
                     return $cmd
+                } elseif ($major -eq 3 -and $minor -ge 13) {
+                    Write-Warn "$ver is too new (faster-whisper/SSL require 3.10-3.12)"
                 } else {
-                    Write-Warn "$ver is too old (need 3.10+)"
+                    Write-Warn "$ver is too old (need 3.10-3.12)"
                 }
             }
         } catch {}

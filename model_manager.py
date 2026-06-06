@@ -170,13 +170,46 @@ def download_silero():
     import torch
 
     log.info("Downloading Silero VAD...")
-    model, _ = torch.hub.load(
-        repo_or_dir="snakers4/silero-vad",
-        model="silero_vad",
-        trust_repo=True,
-    )
+    try:
+        model, _ = torch.hub.load(
+            repo_or_dir="snakers4/silero-vad",
+            model="silero_vad",
+            trust_repo=True,
+        )
+    except Exception as exc:
+        if "CERTIFICATE_VERIFY" not in str(exc):
+            raise
+        log.warning("SSL strict verification failed, retrying with relaxed flags")
+        model, _ = _load_silero_relaxed_ssl()
     del model
     log.info("Silero VAD downloaded")
+
+
+def _load_silero_relaxed_ssl():
+    # Python 3.13 enables VERIFY_X509_STRICT by default, rejecting certificates
+    # without an Authority Key Identifier (common behind SSL-inspecting proxies).
+    import ssl
+
+    import torch
+
+    strict = getattr(ssl, "VERIFY_X509_STRICT", 0)
+    original = ssl._create_default_https_context
+
+    def relaxed_context(*args, **kwargs):
+        ctx = ssl.create_default_context(*args, **kwargs)
+        ctx.verify_flags &= ~strict
+        return ctx
+
+    ssl._create_default_https_context = relaxed_context
+    try:
+        return torch.hub.load(
+            repo_or_dir="snakers4/silero-vad",
+            model="silero_vad",
+            trust_repo=True,
+            force_reload=True,
+        )
+    finally:
+        ssl._create_default_https_context = original
 
 
 def download_asr(engine, model_size="medium", hub="ms"):
