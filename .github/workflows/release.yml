@@ -1,0 +1,41 @@
+name: Build portable release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version label for the zip (optional, e.g. v1.0.0)'
+        required: false
+        default: ''
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build portable zip
+        shell: pwsh
+        run: |
+          $version = "${{ github.event.inputs.version }}"
+          if (-not $version -and "${{ github.ref_type }}" -eq "tag") { $version = "${{ github.ref_name }}" }
+          if ($version) { ./build_release.ps1 -Version $version } else { ./build_release.ps1 }
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: LiveTranslate-portable
+          path: release/*.zip
+
+      - name: Attach to GitHub Release
+        if: github.ref_type == 'tag'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: release/*.zip

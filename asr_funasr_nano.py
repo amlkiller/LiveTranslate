@@ -107,8 +107,8 @@ class FunASRNanoEngine:
         if not result or not result[0].get("text"):
             return None
 
-        raw_text = result[0]["text"]
-        text = result[0].get("text_tn", raw_text) or raw_text
+        # "text" keeps punctuation; "text_tn" strips it all via regex
+        text = result[0]["text"]
 
         # Clean special tags
         text = re.sub(r"<\|[^|]+\|>", "", text).strip()
@@ -118,7 +118,7 @@ class FunASRNanoEngine:
 
         detected_lang = self.language or self._guess_language(text)
 
-        log.debug(f"Raw: {raw_text} | ITN: {text}")
+        log.debug(f"ASR: {text}")
         return {
             "text": text,
             "language": detected_lang,

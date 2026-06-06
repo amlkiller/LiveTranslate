@@ -21,4 +21,5 @@ Desktop.ini
 # Distribution
 dist/
 build/
+release/
 *.egg-info/
