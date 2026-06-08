@@ -38,7 +38,16 @@ from translator import Translator, RepetitionError
 from transcript_writer import TranscriptWriter
 
 from PyQt6.QtWidgets import QApplication, QSystemTrayIcon, QMenu, QDialog, QMessageBox
-from PyQt6.QtGui import QAction, QActionGroup, QIcon, QPixmap, QPainter, QColor, QFont
+from PyQt6.QtGui import (
+    QAction,
+    QActionGroup,
+    QIcon,
+    QPixmap,
+    QPainter,
+    QColor,
+    QFont,
+    QFontDatabase,
+)
 from PyQt6.QtCore import QTimer, Qt
 
 from subtitle_overlay import SubtitleOverlay
@@ -1225,9 +1234,15 @@ def main():
     if saved and saved.get("ui_lang"):
         set_lang(saved["ui_lang"])
 
-    os.environ["QT_LOGGING_RULES"] = "qt.text.font.db=false"
+    os.environ["QT_LOGGING_RULES"] = (
+        "qt.text.font.db=false;qt.qpa.fonts.warning=false"
+    )
     app = QApplication(sys.argv)
     app.setQuitOnLastWindowClosed(False)
+    # Pin a guaranteed TrueType UI font to avoid DirectWrite failures on the
+    # legacy "MS Sans Serif" bitmap font Windows may resolve as the default
+    if "Segoe UI" in QFontDatabase.families():
+        app.setFont(QFont("Segoe UI", 9))
     _app_icon = create_app_icon()
     app.setWindowIcon(_app_icon)
 

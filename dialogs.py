@@ -27,7 +27,7 @@ from PyQt6.QtWidgets import (
 )
 
 from model_manager import download_asr, download_silero
-from i18n import t
+from i18n import t, get_lang
 
 log = logging.getLogger("LiveTranslate.Dialogs")
 
@@ -153,6 +153,13 @@ class SetupWizardDialog(QDialog):
                 t("hub_modelscope_full"),
                 t("hub_huggingface_full"),
             ]
+        )
+        # Default source by system language: Chinese -> ModelScope, others -> HuggingFace
+        _sys_lang = get_lang()
+        self._hub_combo.setCurrentIndex(0 if _sys_lang == "zh" else 1)
+        log.info(
+            f"Default hub by lang: {_sys_lang} -> "
+            f"{'ms (ModelScope)' if _sys_lang == 'zh' else 'hf (HuggingFace)'}"
         )
         hub_layout.addWidget(self._hub_combo)
         layout.addWidget(hub_group)
