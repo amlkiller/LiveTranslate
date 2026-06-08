@@ -349,6 +349,7 @@ def download_asr(engine, model_size="medium", hub="ms", proxy="system"):
                 model_id = asr_model_id(engine, "hf")
                 log.info(f"Downloading {model_id} from HuggingFace...")
                 snapshot_download(repo_id=model_id, cache_dir=hf_cache)
+            neutralize_funasr_requirements(get_local_model_path(engine, hub=hub))
         elif engine == "anime-whisper":
             # HF-only, ignore hub setting
             from huggingface_hub import snapshot_download
@@ -363,6 +364,26 @@ def download_asr(engine, model_size="medium", hub="ms", proxy="system"):
             log.info(f"Downloading {model_id} from HuggingFace...")
             snapshot_download(repo_id=model_id, cache_dir=hf_cache)
     log.info(f"ASR model downloaded: {engine}")
+
+
+def neutralize_funasr_requirements(model_dir) -> None:
+    """Skip FunASR's load-time `pip install -r requirements.txt`.
+
+    With trust_remote_code=True, FunASR detects requirements.txt in the model
+    dir and runs pip in a subprocess whose output is swallowed (PIPE). On a slow
+    or proxy-blocked PyPI this hangs indefinitely with no log output, and it can
+    pull heavy unused deps (e.g. gradio). All real deps already live in the venv,
+    so rename the file out of the way to make the check miss.
+    """
+    if not model_dir:
+        return
+    req = Path(model_dir) / "requirements.txt"
+    if req.exists():
+        try:
+            req.replace(req.with_name("requirements.txt.bundled"))
+            log.info(f"Skipped FunASR requirements install: {req}")
+        except OSError as exc:
+            log.warning(f"Failed to neutralize {req}: {exc}")
 
 
 def dir_size(path) -> int:

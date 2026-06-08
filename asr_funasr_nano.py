@@ -23,7 +23,11 @@ class FunASRNanoEngine:
         import model as _nano_model  # noqa: F401
 
         from funasr import AutoModel
-        from model_manager import ASR_MODEL_IDS, get_local_model_path
+        from model_manager import (
+            ASR_MODEL_IDS,
+            get_local_model_path,
+            neutralize_funasr_requirements,
+        )
 
         model_name = ASR_MODEL_IDS[engine_type]
         local = get_local_model_path(engine_type, hub=hub)
@@ -31,6 +35,7 @@ class FunASRNanoEngine:
 
         if local:
             self._ensure_qwen_weights(local)
+            neutralize_funasr_requirements(local)
 
         prev_cwd = os.getcwd()
         if local:
