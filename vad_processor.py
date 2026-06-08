@@ -28,8 +28,11 @@ class VADProcessor:
         self._chunk_duration = chunk_duration
         self.mode = "silero"  # "silero", "energy", "disabled"
 
+        # Pin the branch so torch.hub skips the GitHub default-branch probe
+        # (that network call runs even with a warm cache and ignores our
+        # download proxy, crashing offline / behind a flaky GitHub).
         self._model, self._utils = torch.hub.load(
-            repo_or_dir="snakers4/silero-vad",
+            repo_or_dir="snakers4/silero-vad:master",
             model="silero_vad",
             trust_repo=True,
         )

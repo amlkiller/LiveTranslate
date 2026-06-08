@@ -231,7 +231,7 @@ def download_silero(proxy: str = "system"):
     with _proxy_env(proxy):
         try:
             model, _ = torch.hub.load(
-                repo_or_dir="snakers4/silero-vad",
+                repo_or_dir="snakers4/silero-vad:master",
                 model="silero_vad",
                 trust_repo=True,
             )
@@ -262,7 +262,7 @@ def _load_silero_relaxed_ssl():
     ssl._create_default_https_context = relaxed_context
     try:
         return torch.hub.load(
-            repo_or_dir="snakers4/silero-vad",
+            repo_or_dir="snakers4/silero-vad:master",
             model="silero_vad",
             trust_repo=True,
             force_reload=True,
