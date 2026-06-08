@@ -112,7 +112,16 @@ def apply_cache_env():
     log.info(f"Cache env set: {resolved}")
 
 
+def _has_silero_pkg() -> bool:
+    """True when the silero-vad PyPI package (model bundled in wheel) is installed."""
+    import importlib.util
+
+    return importlib.util.find_spec("silero_vad") is not None
+
+
 def is_silero_cached() -> bool:
+    if _has_silero_pkg():
+        return True
     torch_hub = MODELS_DIR / "torch" / "hub"
     return any(torch_hub.glob("snakers4_silero-vad*")) if torch_hub.exists() else False
 
@@ -225,6 +234,9 @@ def get_local_model_path(engine_type, hub="ms"):
 
 
 def download_silero(proxy: str = "system"):
+    if _has_silero_pkg():
+        log.info("Silero VAD bundled by silero-vad package, no download needed")
+        return
     import torch
 
     log.info("Downloading Silero VAD...")

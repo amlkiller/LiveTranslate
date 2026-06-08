@@ -24,6 +24,9 @@ sentencepiece>=0.2.0
 tiktoken>=0.7.0
 transformers>=4.40.0
 
+# VAD (bundles the Silero v5 model in the wheel — no GitHub/torch.hub download)
+silero-vad>=5.0
+
 # Model hubs
 modelscope>=1.20.0
 huggingface_hub>=0.20.0

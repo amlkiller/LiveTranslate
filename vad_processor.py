@@ -28,14 +28,20 @@ class VADProcessor:
         self._chunk_duration = chunk_duration
         self.mode = "silero"  # "silero", "energy", "disabled"
 
-        # Pin the branch so torch.hub skips the GitHub default-branch probe
-        # (that network call runs even with a warm cache and ignores our
-        # download proxy, crashing offline / behind a flaky GitHub).
-        self._model, self._utils = torch.hub.load(
-            repo_or_dir="snakers4/silero-vad:master",
-            model="silero_vad",
-            trust_repo=True,
-        )
+        # Silero v5 ships its model inside the `silero-vad` PyPI package, so load
+        # it from there (zero network). Only fall back to the torch.hub cache
+        # (pinned branch -> offline when already cached) if the package is
+        # missing, since torch.hub otherwise probes/downloads from GitHub.
+        try:
+            from silero_vad import load_silero_vad
+        except ImportError:
+            self._model, _ = torch.hub.load(
+                repo_or_dir="snakers4/silero-vad:master",
+                model="silero_vad",
+                trust_repo=True,
+            )
+        else:
+            self._model = load_silero_vad()
         self._model.eval()
 
         self._speech_buffer = []

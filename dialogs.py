@@ -199,7 +199,7 @@ class SetupWizardDialog(QDialog):
         self._log_handler = _LogCapture(self._log_signal.emit)
 
         # Auto-start countdown
-        self._countdown = 5
+        self._countdown = 15
         self._auto_timer = QTimer()
         self._auto_timer.setInterval(1000)
         self._auto_timer.timeout.connect(self._tick_countdown)
@@ -214,7 +214,7 @@ class SetupWizardDialog(QDialog):
         )
 
     def _reset_countdown(self):
-        self._countdown = 5
+        self._countdown = 15
         self._auto_timer.start()
         self._update_btn_countdown()
 
