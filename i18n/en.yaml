@@ -159,6 +159,7 @@ dialog_delete_msg: >-
 # Dialogs
 window_setup: "LiveTranslate - Initial Setup"
 group_download_source: "Model Download Source"
+group_download_proxy: "Download Proxy"
 hub_modelscope_full: "ModelScope (China)"
 hub_huggingface_full: "HuggingFace (International)"
 btn_start_download: "Start Download"

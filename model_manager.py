@@ -1,8 +1,66 @@
 import os
+import contextlib
 import logging
 from pathlib import Path
 
 log = logging.getLogger("LiveTranslate.ModelManager")
+
+_PROXY_ENV_KEYS = (
+    "HTTP_PROXY",
+    "HTTPS_PROXY",
+    "ALL_PROXY",
+    "http_proxy",
+    "https_proxy",
+    "all_proxy",
+)
+
+
+@contextlib.contextmanager
+def _proxy_env(proxy: str):
+    """Temporarily route all download backends through a proxy.
+
+    proxy:
+        "system" / "" / None -> leave ambient env & OS proxy untouched
+        "none"               -> force-disable any proxy for this download
+        a URL                -> send urllib/requests/httpx traffic through it
+
+    Covers torch.hub (urllib), huggingface_hub and modelscope (requests),
+    which all honor the *_PROXY env vars; urllib additionally gets an explicit
+    opener so a previously cached default opener cannot bypass the setting.
+    """
+    import urllib.request
+
+    if proxy in ("system", "", None):
+        yield
+        return
+    saved_env: dict = {key: os.environ.get(key) for key in _PROXY_ENV_KEYS}
+    saved_no_proxy = os.environ.get("NO_PROXY")
+    saved_opener = getattr(urllib.request, "_opener", None)
+    try:
+        if proxy == "none":
+            for key in _PROXY_ENV_KEYS:
+                os.environ.pop(key, None)
+            os.environ["NO_PROXY"] = "*"
+            handler = urllib.request.ProxyHandler({})
+        else:
+            for key in _PROXY_ENV_KEYS:
+                os.environ[key] = proxy
+            os.environ.pop("NO_PROXY", None)
+            handler = urllib.request.ProxyHandler({"http": proxy, "https": proxy})
+        urllib.request.install_opener(urllib.request.build_opener(handler))
+        log.info(f"Download proxy active: {proxy}")
+        yield
+    finally:
+        for key, value in saved_env.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+        if saved_no_proxy is None:
+            os.environ.pop("NO_PROXY", None)
+        else:
+            os.environ["NO_PROXY"] = saved_no_proxy
+        urllib.request.install_opener(saved_opener)
 
 APP_DIR = Path(__file__).parent
 MODELS_DIR = APP_DIR / "models"
@@ -166,21 +224,22 @@ def get_local_model_path(engine_type, hub="ms"):
         return _try_hf() or _try_ms()
 
 
-def download_silero():
+def download_silero(proxy: str = "system"):
     import torch
 
     log.info("Downloading Silero VAD...")
-    try:
-        model, _ = torch.hub.load(
-            repo_or_dir="snakers4/silero-vad",
-            model="silero_vad",
-            trust_repo=True,
-        )
-    except Exception as exc:
-        if "CERTIFICATE_VERIFY" not in str(exc):
-            raise
-        log.warning("SSL strict verification failed, retrying with relaxed flags")
-        model, _ = _load_silero_relaxed_ssl()
+    with _proxy_env(proxy):
+        try:
+            model, _ = torch.hub.load(
+                repo_or_dir="snakers4/silero-vad",
+                model="silero_vad",
+                trust_repo=True,
+            )
+        except Exception as exc:
+            if "CERTIFICATE_VERIFY" not in str(exc):
+                raise
+            log.warning("SSL strict verification failed, retrying with relaxed flags")
+            model, _ = _load_silero_relaxed_ssl()
     del model
     log.info("Silero VAD downloaded")
 
@@ -212,35 +271,36 @@ def _load_silero_relaxed_ssl():
         ssl._create_default_https_context = original
 
 
-def download_asr(engine, model_size="medium", hub="ms"):
+def download_asr(engine, model_size="medium", hub="ms", proxy="system"):
     resolved = str(MODELS_DIR.resolve())
     ms_cache = os.path.join(resolved, "modelscope")
     hf_cache = os.path.join(resolved, "huggingface", "hub")
-    if engine in ("sensevoice", "funasr-nano", "funasr-mlt-nano"):
-        model_id = ASR_MODEL_IDS[engine]
-        if hub == "ms":
-            from modelscope import snapshot_download
+    with _proxy_env(proxy):
+        if engine in ("sensevoice", "funasr-nano", "funasr-mlt-nano"):
+            model_id = ASR_MODEL_IDS[engine]
+            if hub == "ms":
+                from modelscope import snapshot_download
 
-            log.info(f"Downloading {model_id} from ModelScope...")
-            snapshot_download(model_id=model_id, cache_dir=ms_cache)
-        else:
+                log.info(f"Downloading {model_id} from ModelScope...")
+                snapshot_download(model_id=model_id, cache_dir=ms_cache)
+            else:
+                from huggingface_hub import snapshot_download
+
+                log.info(f"Downloading {model_id} from HuggingFace...")
+                snapshot_download(repo_id=model_id, cache_dir=hf_cache)
+        elif engine == "anime-whisper":
+            # HF-only, ignore hub setting
             from huggingface_hub import snapshot_download
 
+            model_id = ASR_MODEL_IDS[engine]
             log.info(f"Downloading {model_id} from HuggingFace...")
             snapshot_download(repo_id=model_id, cache_dir=hf_cache)
-    elif engine == "anime-whisper":
-        # HF-only, ignore hub setting
-        from huggingface_hub import snapshot_download
+        elif engine == "whisper":
+            from huggingface_hub import snapshot_download
 
-        model_id = ASR_MODEL_IDS[engine]
-        log.info(f"Downloading {model_id} from HuggingFace...")
-        snapshot_download(repo_id=model_id, cache_dir=hf_cache)
-    elif engine == "whisper":
-        from huggingface_hub import snapshot_download
-
-        model_id = f"Systran/faster-whisper-{model_size}"
-        log.info(f"Downloading {model_id} from HuggingFace...")
-        snapshot_download(repo_id=model_id, cache_dir=hf_cache)
+            model_id = f"Systran/faster-whisper-{model_size}"
+            log.info(f"Downloading {model_id} from HuggingFace...")
+            snapshot_download(repo_id=model_id, cache_dir=hf_cache)
     log.info(f"ASR model downloaded: {engine}")
 
 

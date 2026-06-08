@@ -164,6 +164,23 @@ class SetupWizardDialog(QDialog):
         hub_layout.addWidget(self._hub_combo)
         layout.addWidget(hub_group)
 
+        proxy_group = QGroupBox(t("group_download_proxy"))
+        proxy_form = QFormLayout(proxy_group)
+        self._proxy_mode = QComboBox()
+        self._proxy_mode.addItems(
+            [t("proxy_none"), t("proxy_system"), t("proxy_custom")]
+        )
+        # Default to following the system proxy for model downloads
+        self._proxy_mode.setCurrentIndex(1)
+        self._proxy_mode.currentIndexChanged.connect(self._on_proxy_mode_changed)
+        self._proxy_url = QLineEdit()
+        self._proxy_url.setPlaceholderText("http://127.0.0.1:7890")
+        self._proxy_url.setEnabled(False)
+        self._proxy_url.textEdited.connect(self._reset_countdown)
+        proxy_form.addRow(t("label_proxy"), self._proxy_mode)
+        proxy_form.addRow(t("label_proxy_url"), self._proxy_url)
+        layout.addWidget(proxy_group)
+
         self._download_btn = QPushButton(t("btn_start_download"))
         self._download_btn.clicked.connect(self._start_download)
         layout.addWidget(self._download_btn)
@@ -201,6 +218,18 @@ class SetupWizardDialog(QDialog):
         self._auto_timer.start()
         self._update_btn_countdown()
 
+    def _on_proxy_mode_changed(self, index):
+        self._proxy_url.setEnabled(index == 2)
+        self._reset_countdown()
+
+    def _download_proxy(self) -> str:
+        index = self._proxy_mode.currentIndex()
+        if index == 1:
+            return "system"
+        if index == 2:
+            return self._proxy_url.text().strip() or "system"
+        return "none"
+
     def _tick_countdown(self):
         self._countdown -= 1
         if self._countdown <= 0:
@@ -220,9 +249,12 @@ class SetupWizardDialog(QDialog):
         self._download_btn.setText(t("btn_start_download"))
         self._download_btn.setEnabled(False)
         self._hub_combo.setEnabled(False)
+        self._proxy_mode.setEnabled(False)
+        self._proxy_url.setEnabled(False)
         self._log_view.show()
 
         hub = "ms" if self._hub_combo.currentIndex() == 0 else "hf"
+        self._proxy = self._download_proxy()
 
         logging.getLogger().addHandler(self._log_handler)
         self._orig_stderr = sys.stderr
@@ -230,7 +262,7 @@ class SetupWizardDialog(QDialog):
 
         self._error = None
         self._download_thread = threading.Thread(
-            target=self._download_worker, args=(hub,), daemon=True
+            target=self._download_worker, args=(hub, self._proxy), daemon=True
         )
         self._download_thread.start()
 
@@ -239,10 +271,10 @@ class SetupWizardDialog(QDialog):
         self._poll_timer.timeout.connect(self._check_done)
         self._poll_timer.start()
 
-    def _download_worker(self, hub):
+    def _download_worker(self, hub, proxy):
         try:
-            download_silero()
-            download_asr("sensevoice", hub=hub)
+            download_silero(proxy=proxy)
+            download_asr("sensevoice", hub=hub, proxy=proxy)
         except Exception as e:
             self._error = str(e)
             log.error(f"Download failed: {e}", exc_info=True)
@@ -259,6 +291,8 @@ class SetupWizardDialog(QDialog):
             self._download_btn.setEnabled(True)
             self._download_btn.setText(t("btn_retry"))
             self._hub_combo.setEnabled(True)
+            self._proxy_mode.setEnabled(True)
+            self._proxy_url.setEnabled(self._proxy_mode.currentIndex() == 2)
             return
 
         self._append_log(f"\n{t('download_complete')}")
@@ -267,6 +301,7 @@ class SetupWizardDialog(QDialog):
 
         settings = {
             "hub": hub,
+            "download_proxy": self._proxy,
             "asr_engine": "sensevoice",
             "vad_mode": "silero",
             "vad_threshold": 0.3,
@@ -287,7 +322,7 @@ class ModelDownloadDialog(QDialog):
 
     _log_signal = pyqtSignal(str)
 
-    def __init__(self, missing_models, hub="ms", parent=None):
+    def __init__(self, missing_models, hub="ms", proxy="system", parent=None):
         super().__init__(parent)
         self.setWindowTitle(t("window_download"))
         self.setMinimumWidth(520)
@@ -321,6 +356,7 @@ class ModelDownloadDialog(QDialog):
 
         self._missing = missing_models
         self._hub = hub
+        self._proxy = proxy
         self._error = None
 
         self._log_signal.connect(self._append_log)
@@ -353,17 +389,19 @@ class ModelDownloadDialog(QDialog):
         try:
             for m in self._missing:
                 if m["type"] == "silero-vad":
-                    download_silero()
+                    download_silero(proxy=self._proxy)
                 elif m["type"] in (
                     "sensevoice",
                     "funasr-nano",
                     "funasr-mlt-nano",
                     "anime-whisper",
                 ):
-                    download_asr(m["type"], hub=self._hub)
+                    download_asr(m["type"], hub=self._hub, proxy=self._proxy)
                 elif m["type"].startswith("whisper-"):
                     size = m["type"].replace("whisper-", "")
-                    download_asr("whisper", model_size=size, hub=self._hub)
+                    download_asr(
+                        "whisper", model_size=size, hub=self._hub, proxy=self._proxy
+                    )
         except Exception as e:
             self._error = str(e)
             log.error(f"Download failed: {e}", exc_info=True)

@@ -158,6 +158,7 @@ dialog_delete_msg: >-
 # 对话框
 window_setup: "LiveTranslate - 初始设置"
 group_download_source: "模型下载源"
+group_download_proxy: "下载代理"
 hub_modelscope_full: "ModelScope (国内)"
 hub_huggingface_full: "HuggingFace (国际)"
 btn_start_download: "开始下载"

@@ -362,8 +362,10 @@ class LiveTranslateApp:
         self._vad._reset()
         device = self._asr_device
         hub = "ms"
+        download_proxy = "system"
         if self._panel:
             hub = self._panel.get_settings().get("hub", "ms")
+            download_proxy = self._panel.get_settings().get("download_proxy", "system")
 
         model_size = self._config["asr"]["model_size"]
         if self._panel:
@@ -383,7 +385,9 @@ class LiveTranslateApp:
             missing = get_missing_models(engine_type, model_size, hub)
             missing = [m for m in missing if m["type"] != "silero-vad"]
             if missing:
-                dlg = ModelDownloadDialog(missing, hub=hub, parent=parent)
+                dlg = ModelDownloadDialog(
+                    missing, hub=hub, proxy=download_proxy, parent=parent
+                )
                 if dlg.exec() != QDialog.DialogCode.Accepted:
                     log.info(f"Download cancelled/failed: {engine_type}")
                     # Restore readiness if old engine is still available
@@ -1289,7 +1293,11 @@ def main():
         )
         if missing:
             log.info(f"Missing models: {[m['name'] for m in missing]}")
-            dlg = ModelDownloadDialog(missing, hub=saved.get("hub", "ms"))
+            dlg = ModelDownloadDialog(
+                missing,
+                hub=saved.get("hub", "ms"),
+                proxy=saved.get("download_proxy", "system"),
+            )
             if dlg.exec() != QDialog.DialogCode.Accepted:
                 sys.exit(0)
 
