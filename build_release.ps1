@@ -86,6 +86,41 @@ Set-Location $Root
 $Uv = Join-Path $Root "tools\uv.exe"
 $env:UV_LINK_MODE = "copy"
 
+function Enable-SystemProxy {
+    # uv (Python download) and pip honor *_PROXY env vars but not the Windows
+    # registry system proxy; bridge it here. An already-set env proxy wins.
+    if ($env:HTTPS_PROXY -or $env:HTTP_PROXY) {
+        Write-Host "Using proxy from environment" -ForegroundColor Gray
+        return
+    }
+    try {
+        $reg = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Internet Settings"
+        $s = Get-ItemProperty -Path $reg -ErrorAction Stop
+        if ($s.ProxyEnable -ne 1 -or -not $s.ProxyServer) { return }
+        $server = [string]$s.ProxyServer
+        $http = $null; $https = $null
+        if ($server -like "*=*") {
+            foreach ($part in ($server -split ';')) {
+                $kv = $part -split '=', 2
+                if ($kv.Count -eq 2 -and $kv[0] -eq 'http')  { $http  = $kv[1] }
+                if ($kv.Count -eq 2 -and $kv[0] -eq 'https') { $https = $kv[1] }
+            }
+        } else {
+            $http = $server; $https = $server
+        }
+        if (-not $http)  { $http  = $https }
+        if (-not $https) { $https = $http }
+        if (-not $http) { return }
+        if ($http  -notmatch '^\w+://') { $http  = "http://$http" }
+        if ($https -notmatch '^\w+://') { $https = "http://$https" }
+        $env:HTTP_PROXY  = $http
+        $env:HTTPS_PROXY = $https
+        $env:ALL_PROXY   = $https
+        Write-Host "Detected Windows system proxy: $https (applied to uv/pip)" -ForegroundColor Green
+    } catch {}
+}
+Enable-SystemProxy
+
 Write-Host "Creating virtual environment with Python 3.12..." -ForegroundColor Cyan
 & $Uv venv --python 3.12 --managed-python .venv
 if ($LASTEXITCODE -ne 0) { Write-Host "Failed to create venv" -ForegroundColor Red; exit 1 }
