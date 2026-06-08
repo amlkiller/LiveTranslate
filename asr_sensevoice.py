@@ -17,12 +17,12 @@ LANG_MAP = {
 class SenseVoiceEngine:
     """Speech-to-text using FunASR SenseVoice."""
 
-    def __init__(self, model_name="iic/SenseVoiceSmall", device="cuda", hub="ms"):
+    def __init__(self, model_name=None, device="cuda", hub="ms"):
         from funasr import AutoModel
-        from model_manager import get_local_model_path
+        from model_manager import get_local_model_path, asr_model_id
 
         local = get_local_model_path("sensevoice", hub=hub)
-        model = local or model_name
+        model = local or model_name or asr_model_id("sensevoice", hub)
         self._model = AutoModel(
             model=model,
             trust_remote_code=True,
@@ -31,7 +31,7 @@ class SenseVoiceEngine:
             disable_update=True,
         )
         self.language = None  # None = auto detect
-        log.info(f"SenseVoice loaded: {model_name} on {device} (hub={hub})")
+        log.info(f"SenseVoice loaded: {model} on {device} (hub={hub})")
 
     def set_language(self, language: str):
         old = self.language

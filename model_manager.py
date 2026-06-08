@@ -72,6 +72,19 @@ ASR_MODEL_IDS = {
     "anime-whisper": "litagin/anime-whisper",
 }
 
+# HuggingFace repo ids for engines whose namespace differs from ModelScope.
+# SenseVoice lives under `iic/` on ModelScope but `FunAudioLLM/` on HuggingFace.
+ASR_MODEL_IDS_HF = {
+    "sensevoice": "FunAudioLLM/SenseVoiceSmall",
+}
+
+
+def asr_model_id(engine_type: str, hub: str = "ms") -> str:
+    """Return the repo id for an engine on the given hub ('ms' or 'hf')."""
+    if hub == "hf" and engine_type in ASR_MODEL_IDS_HF:
+        return ASR_MODEL_IDS_HF[engine_type]
+    return ASR_MODEL_IDS[engine_type]
+
 ASR_DISPLAY_NAMES = {
     "sensevoice": "SenseVoice Small",
     "funasr-nano": "Fun-ASR-Nano",
@@ -96,10 +109,10 @@ _MODEL_SIZE_BYTES = {
 _WHISPER_SIZES = ["tiny", "base", "small", "medium", "large-v3"]
 
 _CACHE_MODELS = [
-    ("SenseVoice Small", "iic/SenseVoiceSmall"),
-    ("Fun-ASR-Nano", "FunAudioLLM/Fun-ASR-Nano-2512"),
-    ("Fun-ASR-MLT-Nano", "FunAudioLLM/Fun-ASR-MLT-Nano-2512"),
-    ("Anime-Whisper", "litagin/anime-whisper"),
+    ("SenseVoice Small", "sensevoice"),
+    ("Fun-ASR-Nano", "funasr-nano"),
+    ("Fun-ASR-MLT-Nano", "funasr-mlt-nano"),
+    ("Anime-Whisper", "anime-whisper"),
 ]
 
 
@@ -137,14 +150,45 @@ def _ms_model_path(org, name):
     return MODELS_DIR / "modelscope" / org / name
 
 
+def _hf_repo_complete(org: str, name: str, min_bytes: int = 50_000_000) -> bool:
+    """True if a HuggingFace repo cache exists AND finished downloading.
+
+    A killed/aborted download leaves snapshot entries pointing at missing blobs
+    (broken symlinks) or '.incomplete' blobs; treating that as cached makes the
+    model load hang. Validate a snapshot where every file resolves (stat follows
+    symlinks; a broken link raises) and the resolved bytes are substantial. This
+    ignores orphan '.incomplete' blobs left behind by an earlier interrupted run.
+    """
+    snap_root = MODELS_DIR / "huggingface" / "hub" / f"models--{org}--{name}" / "snapshots"
+    if not snap_root.exists():
+        return False
+    for snap in snap_root.iterdir():
+        if not snap.is_dir():
+            continue
+        total = 0
+        broken = False
+        for f in snap.rglob("*"):
+            if f.is_dir():
+                continue
+            try:
+                total += f.stat().st_size
+            except OSError:
+                broken = True
+                break
+        if not broken and total >= min_bytes:
+            return True
+    return False
+
+
 def is_asr_cached(engine_type, model_size="medium", hub="ms") -> bool:
     if engine_type in ("sensevoice", "funasr-nano", "funasr-mlt-nano"):
-        model_id = ASR_MODEL_IDS[engine_type]
-        org, name = model_id.split("/")
-        # Accept cache from either hub to avoid redundant downloads
-        if _ms_model_path(org, name).exists():
+        # Accept cache from either hub to avoid redundant downloads; the repo
+        # namespace can differ between ModelScope and HuggingFace (SenseVoice).
+        ms_org, ms_name = asr_model_id(engine_type, "ms").split("/")
+        if _ms_model_path(ms_org, ms_name).exists():
             return True
-        if (MODELS_DIR / "huggingface" / "hub" / f"models--{org}--{name}").exists():
+        hf_org, hf_name = asr_model_id(engine_type, "hf").split("/")
+        if _hf_repo_complete(hf_org, hf_name):
             return True
         return False
     if engine_type == "anime-whisper":
@@ -210,16 +254,20 @@ def get_local_model_path(engine_type, hub="ms"):
     """
     if engine_type not in ASR_MODEL_IDS:
         return None
-    model_id = ASR_MODEL_IDS[engine_type]
-    org, name = model_id.split("/")
+    ms_org, ms_name = asr_model_id(engine_type, "ms").split("/")
+    hf_org, hf_name = asr_model_id(engine_type, "hf").split("/")
 
     def _try_ms():
-        local = _ms_model_path(org, name)
+        local = _ms_model_path(ms_org, ms_name)
         return str(local) if local.exists() else None
 
     def _try_hf():
         snap_dir = (
-            MODELS_DIR / "huggingface" / "hub" / f"models--{org}--{name}" / "snapshots"
+            MODELS_DIR
+            / "huggingface"
+            / "hub"
+            / f"models--{hf_org}--{hf_name}"
+            / "snapshots"
         )
         if snap_dir.exists():
             snaps = sorted(snap_dir.iterdir())
@@ -289,15 +337,16 @@ def download_asr(engine, model_size="medium", hub="ms", proxy="system"):
     hf_cache = os.path.join(resolved, "huggingface", "hub")
     with _proxy_env(proxy):
         if engine in ("sensevoice", "funasr-nano", "funasr-mlt-nano"):
-            model_id = ASR_MODEL_IDS[engine]
             if hub == "ms":
                 from modelscope import snapshot_download
 
+                model_id = asr_model_id(engine, "ms")
                 log.info(f"Downloading {model_id} from ModelScope...")
                 snapshot_download(model_id=model_id, cache_dir=ms_cache)
             else:
                 from huggingface_hub import snapshot_download
 
+                model_id = asr_model_id(engine, "hf")
                 log.info(f"Downloading {model_id} from HuggingFace...")
                 snapshot_download(repo_id=model_id, cache_dir=hf_cache)
         elif engine == "anime-whisper":
@@ -344,10 +393,11 @@ def get_cache_entries():
     hf_base = MODELS_DIR / "huggingface" / "hub"
     torch_base = MODELS_DIR / "torch" / "hub"
 
-    for name, model_id in _CACHE_MODELS:
-        org, model = model_id.split("/")
-        ms_path = _ms_model_path(org, model)
-        hf_path = hf_base / f"models--{org}--{model}"
+    for name, engine in _CACHE_MODELS:
+        ms_org, ms_model = asr_model_id(engine, "ms").split("/")
+        hf_org, hf_model = asr_model_id(engine, "hf").split("/")
+        ms_path = _ms_model_path(ms_org, ms_model)
+        hf_path = hf_base / f"models--{hf_org}--{hf_model}"
         if ms_path.exists():
             entries.append((f"{name} (ModelScope)", ms_path))
         if hf_path.exists():
