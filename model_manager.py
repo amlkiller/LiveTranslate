@@ -213,12 +213,12 @@ def is_asr_cached(engine_type, model_size="medium", hub="ms") -> bool:
                 return True
         return False
     elif engine_type == "whisper":
-        return (
-            MODELS_DIR
-            / "huggingface"
-            / "hub"
-            / f"models--Systran--faster-whisper-{model_size}"
-        ).exists()
+        min_bytes = int(
+            _MODEL_SIZE_BYTES.get(f"whisper-{model_size}", 50_000_000) * 0.5
+        )
+        return _hf_repo_complete(
+            "Systran", f"faster-whisper-{model_size}", min_bytes=min_bytes
+        )
     return True
 
 
@@ -426,7 +426,7 @@ def get_cache_entries():
 
     for size in _WHISPER_SIZES:
         hf_path = hf_base / f"models--Systran--faster-whisper-{size}"
-        if hf_path.exists():
+        if hf_path.exists() and is_asr_cached("whisper", size, "hf"):
             entries.append((f"Whisper {size}", hf_path))
 
     if torch_base.exists():

@@ -181,6 +181,16 @@ class Translator:
     def clear_history(self):
         self._history.clear()
 
+    def _format_context(self) -> str:
+        if self._context_turns <= 0 or not self._history:
+            return ""
+        lines = []
+        for src, tgt in self._history[-self._context_turns:]:
+            lines.append(f"Source: {src}")
+            lines.append(f"Translation: {tgt}")
+            lines.append("")
+        return "\n".join(lines).rstrip()
+
     def with_target_language(self, target_language: str) -> "Translator":
         """Create a new Translator with a different target language, sharing the same client."""
         t = Translator.__new__(Translator)
@@ -210,6 +220,7 @@ class Translator:
             prompt = self._system_prompt_template.format(
                 source_lang=src,
                 target_lang=tgt,
+                context=self._format_context(),
             )
         except (KeyError, IndexError, ValueError) as e:
             log.warning(f"Bad prompt template, falling back to default: {e}")
@@ -224,7 +235,11 @@ class Translator:
         else:
             msgs = [{"role": "system", "content": system_prompt}]
             # Append recent history as context
-            if self._context_turns > 0 and self._history:
+            if (
+                self._context_turns > 0
+                and self._history
+                and "{context}" not in self._system_prompt_template
+            ):
                 for src, tgt in self._history[-self._context_turns:]:
                     msgs.append({"role": "user", "content": src})
                     msgs.append({"role": "assistant", "content": tgt})

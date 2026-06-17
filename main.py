@@ -181,6 +181,9 @@ class LiveTranslateApp:
             streaming=config["translation"]["streaming"],
             system_prompt=config["translation"].get("system_prompt"),
         )
+        self._translator.set_context_turns(
+            config["translation"].get("context_window", 0)
+        )
         self._overlay = None
         self._subwin = None
         self._panel = None
@@ -337,7 +340,10 @@ class LiveTranslateApp:
             overrides=model_config.get("overrides"),
             extra_body=model_config.get("extra_body"),
         )
-        self._translator.set_context_turns(model_config.get("context_turns", 0))
+        context_turns = model_config.get(
+            "context_turns", self._config["translation"].get("context_window", 0)
+        )
+        self._translator.set_context_turns(context_turns)
         self._input_price = model_config.get("input_price", 0)
         self._output_price = model_config.get("output_price", 0)
 
@@ -724,7 +730,7 @@ class LiveTranslateApp:
         self._last_interim_samples = 0
         self._last_interim_check_time = 0.0
         self._interim_committed_tail = ""
-        self._tl_executor.shutdown(wait=False)
+        self._tl_executor.shutdown(wait=True)
         self._transcript.close()
         if self._mem_periodic_timer is not None:
             try:
