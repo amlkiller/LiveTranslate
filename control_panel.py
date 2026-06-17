@@ -34,9 +34,12 @@ from dialogs import (
 )
 from model_manager import (
     MODELS_DIR,
+    _WHISPER_SIZES,
     dir_size,
     format_size,
     get_cache_entries,
+    list_local_faster_whisper_models,
+    resolve_custom_whisper_model,
 )
 from i18n import t, LANGUAGES
 from subtitle_settings import SubtitleSettingsWidget
@@ -291,15 +294,10 @@ class ControlPanel(QWidget):
         self._whisper_group = QGroupBox(t("group_download_whisper"))
         whisper_layout = QHBoxLayout(self._whisper_group)
         self._whisper_size_combo = QComboBox()
-        self._whisper_size_combo.addItems(
-            ["tiny", "base", "small", "medium", "large-v3"]
-        )
         saved_size = s.get(
             "whisper_model_size", self._config["asr"].get("model_size", "medium")
         )
-        size_idx = self._whisper_size_combo.findText(saved_size)
-        if size_idx >= 0:
-            self._whisper_size_combo.setCurrentIndex(size_idx)
+        self._populate_whisper_models(saved_size)
         self._whisper_size_combo.currentIndexChanged.connect(
             self._on_whisper_size_changed
         )
@@ -1020,11 +1018,53 @@ class ControlPanel(QWidget):
             self.resize(self.width(), max(h, self.minimumHeight()))
         QTimer.singleShot(0, _fit)
 
+    def _selected_whisper_model(self) -> str:
+        value = self._whisper_size_combo.currentData()
+        return str(value) if value else self._whisper_size_combo.currentText()
+
+    def _populate_whisper_models(self, saved_value: str):
+        self._whisper_size_combo.clear()
+        for size in _WHISPER_SIZES:
+            self._whisper_size_combo.addItem(size, size)
+
+        local_prefix = t("whisper_local_prefix")
+        for item in list_local_faster_whisper_models():
+            idx = self._whisper_size_combo.count()
+            self._whisper_size_combo.addItem(
+                f"{local_prefix}: {item['name']}", item["path"]
+            )
+            self._whisper_size_combo.setItemData(
+                idx, item["path"], Qt.ItemDataRole.ToolTipRole
+            )
+
+        selected = resolve_custom_whisper_model(saved_value) or saved_value
+        idx = self._whisper_size_combo.findData(selected)
+        if idx < 0:
+            idx = self._whisper_size_combo.findText(saved_value)
+        if idx < 0 and selected:
+            label = f"{t('whisper_missing_local')}: {Path(str(selected)).name}"
+            idx = self._whisper_size_combo.count()
+            self._whisper_size_combo.addItem(label, selected)
+            self._whisper_size_combo.setItemData(
+                idx, str(selected), Qt.ItemDataRole.ToolTipRole
+            )
+        if idx >= 0:
+            self._whisper_size_combo.setCurrentIndex(idx)
+
     def _update_whisper_size_label(self):
         from model_manager import is_asr_cached, _MODEL_SIZE_BYTES
 
-        size = self._whisper_size_combo.currentText()
+        size = self._selected_whisper_model()
         cached = is_asr_cached("whisper", size, self._current_settings.get("hub", "ms"))
+        if size not in _WHISPER_SIZES:
+            if cached:
+                self._whisper_status.setText(t("whisper_local_ready"))
+                self._whisper_status.setStyleSheet("color: #4a4; font-size: 11px;")
+            else:
+                self._whisper_status.setText(t("whisper_invalid_local"))
+                self._whisper_status.setStyleSheet("color: #d66; font-size: 11px;")
+            self._whisper_dl_btn.setEnabled(False)
+            return
         if cached:
             self._whisper_status.setText(t("whisper_already_cached"))
             self._whisper_status.setStyleSheet("color: #4a4; font-size: 11px;")
@@ -1037,20 +1077,22 @@ class ControlPanel(QWidget):
 
     def _on_whisper_size_changed(self):
         self._current_settings["whisper_model_size"] = (
-            self._whisper_size_combo.currentText()
+            self._selected_whisper_model()
         )
         self._update_whisper_size_label()
         # If already cached, switch engine immediately
         from model_manager import is_asr_cached
 
-        size = self._whisper_size_combo.currentText()
+        size = self._selected_whisper_model()
         if is_asr_cached("whisper", size, self._current_settings.get("hub", "ms")):
             self._auto_save()
 
     def _download_whisper(self):
         from model_manager import is_asr_cached, get_missing_models
 
-        size = self._whisper_size_combo.currentText()
+        size = self._selected_whisper_model()
+        if size not in _WHISPER_SIZES:
+            return
         hub = self._current_settings.get("hub", "ms")
         if is_asr_cached("whisper", size, hub):
             return
@@ -1283,7 +1325,7 @@ class ControlPanel(QWidget):
             self._asr_engine.currentIndex()
         ]
         self._current_settings["whisper_model_size"] = (
-            self._whisper_size_combo.currentText()
+            self._selected_whisper_model()
         )
         dev_text = self._asr_device.currentText()
         self._current_settings["asr_device"] = dev_text.split(" (")[0]

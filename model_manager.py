@@ -116,6 +116,91 @@ _CACHE_MODELS = [
 ]
 
 
+def _custom_whisper_path(value) -> Path | None:
+    if not value or value in _WHISPER_SIZES:
+        return None
+    path = Path(str(value)).expanduser()
+    if not path.is_absolute():
+        path = APP_DIR / path
+    return path
+
+
+def is_faster_whisper_model_dir(path) -> bool:
+    """True when path looks like a CTranslate2 faster-whisper model directory."""
+    if not path:
+        return False
+    path = Path(path)
+    return (
+        path.is_dir()
+        and (path / "model.bin").is_file()
+        and (path / "config.json").is_file()
+    )
+
+
+def resolve_custom_whisper_model(value) -> str | None:
+    path = _custom_whisper_path(value)
+    if path and is_faster_whisper_model_dir(path):
+        return str(path.resolve())
+    return None
+
+
+def _is_builtin_whisper_cache(path: Path) -> bool:
+    parts = set(path.parts)
+    return any(f"models--Systran--faster-whisper-{s}" in parts for s in _WHISPER_SIZES)
+
+
+def _hf_snapshot_name(path: Path) -> str | None:
+    """Return 'org/repo' for .../models--org--repo/snapshots/<hash>."""
+    if path.parent.name != "snapshots":
+        return None
+    repo_dir = path.parent.parent
+    if not repo_dir.name.startswith("models--"):
+        return None
+
+    encoded = repo_dir.name.removeprefix("models--")
+    parts = encoded.split("--", 1)
+    if len(parts) != 2 or not all(parts):
+        return None
+    return f"{parts[0]}/{parts[1]}"
+
+
+def list_local_faster_whisper_models() -> list[dict]:
+    """Scan ./models for user-provided faster-whisper model directories."""
+    if not MODELS_DIR.exists():
+        return []
+
+    entries = []
+    name_counts = {}
+    seen = set()
+    try:
+        model_bins = list(MODELS_DIR.rglob("model.bin"))
+    except (OSError, PermissionError):
+        return []
+
+    for model_bin in model_bins:
+        model_dir = model_bin.parent
+        if _is_builtin_whisper_cache(model_dir):
+            continue
+        if not is_faster_whisper_model_dir(model_dir):
+            continue
+        try:
+            resolved = str(model_dir.resolve())
+        except OSError:
+            continue
+        if resolved in seen:
+            continue
+        seen.add(resolved)
+
+        name = _hf_snapshot_name(model_dir) or model_dir.name
+        name_counts[name] = name_counts.get(name, 0) + 1
+        if name_counts[name] > 1:
+            name = f"{name} ({model_dir.name[:8]})"
+        entries.append({"name": name, "path": resolved})
+
+    entries.sort(key=lambda item: item["name"].lower())
+    return entries
+
+
 def apply_cache_env():
     """Point all model caches to ./models/."""
     resolved = str(MODELS_DIR.resolve())
@@ -213,6 +298,8 @@ def is_asr_cached(engine_type, model_size="medium", hub="ms") -> bool:
                 return True
         return False
     elif engine_type == "whisper":
+        if model_size not in _WHISPER_SIZES:
+            return resolve_custom_whisper_model(model_size) is not None
         min_bytes = int(
             _MODEL_SIZE_BYTES.get(f"whisper-{model_size}", 50_000_000) * 0.5
         )
@@ -233,6 +320,8 @@ def get_missing_models(engine, model_size, hub) -> list:
             }
         )
     if not is_asr_cached(engine, model_size, hub):
+        if engine == "whisper" and model_size not in _WHISPER_SIZES:
+            return missing
         key = engine if engine != "whisper" else f"whisper-{model_size}"
         display = ASR_DISPLAY_NAMES.get(engine, engine)
         if engine == "whisper":
@@ -358,6 +447,8 @@ def download_asr(engine, model_size="medium", hub="ms", proxy="system"):
             log.info(f"Downloading {model_id} from HuggingFace...")
             snapshot_download(repo_id=model_id, cache_dir=hf_cache)
         elif engine == "whisper":
+            if model_size not in _WHISPER_SIZES:
+                raise ValueError(f"Invalid local faster-whisper model: {model_size}")
             from huggingface_hub import snapshot_download
 
             model_id = f"Systran/faster-whisper-{model_size}"
@@ -428,6 +519,9 @@ def get_cache_entries():
         hf_path = hf_base / f"models--Systran--faster-whisper-{size}"
         if hf_path.exists() and is_asr_cached("whisper", size, "hf"):
             entries.append((f"Whisper {size}", hf_path))
+
+    for item in list_local_faster_whisper_models():
+        entries.append((f"Whisper Local: {item['name']}", Path(item["path"])))
 
     if torch_base.exists():
         for d in sorted(torch_base.glob("snakers4_silero-vad*")):

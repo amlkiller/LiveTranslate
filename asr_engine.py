@@ -1,4 +1,5 @@
 import logging
+import gc
 
 import numpy as np
 from faster_whisper import WhisperModel
@@ -43,7 +44,19 @@ class ASREngine:
         return False
 
     def unload(self):
+        model = self._model
         self._model = None
+        if model is None:
+            return
+
+        for attr in ("model", "feature_extractor", "hf_tokenizer"):
+            if hasattr(model, attr):
+                try:
+                    delattr(model, attr)
+                except Exception as e:
+                    log.debug(f"Failed to delete WhisperModel.{attr}: {e}")
+        del model
+        gc.collect()
 
     def transcribe(self, audio: np.ndarray, word_timestamps: bool = False) -> dict | None:
         """Transcribe audio segment.

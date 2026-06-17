@@ -22,6 +22,7 @@ from model_manager import (
     is_asr_cached,
     ASR_DISPLAY_NAMES,
     MODELS_DIR,
+    resolve_custom_whisper_model,
 )
 
 # Set cache env BEFORE importing torch so TORCH_HOME is respected
@@ -373,10 +374,14 @@ class LiveTranslateApp:
             model_size = self._panel.get_settings().get(
                 "whisper_model_size", model_size
             )
+        model_path = resolve_custom_whisper_model(model_size)
+        if model_path:
+            model_size = model_path
         cached = is_asr_cached(engine_type, model_size, hub)
         display_name = ASR_DISPLAY_NAMES.get(engine_type, engine_type)
         if engine_type == "whisper":
-            display_name = f"Whisper {model_size}"
+            display_model = Path(model_size).name if model_path else model_size
+            display_name = f"Whisper {display_model}"
 
         parent = (
             self._panel if self._panel and self._panel.isVisible() else self._overlay
@@ -1308,7 +1313,7 @@ def main():
     else:
         missing = get_missing_models(
             saved.get("asr_engine", "sensevoice"),
-            config["asr"]["model_size"],
+            saved.get("whisper_model_size", config["asr"]["model_size"]),
             saved.get("hub", "ms"),
         )
         if missing:
