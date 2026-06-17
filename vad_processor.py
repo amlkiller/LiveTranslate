@@ -126,8 +126,9 @@ class VADProcessor:
         chunk = audio_chunk[:window_size]
         if len(chunk) < window_size:
             chunk = np.pad(chunk, (0, window_size - len(chunk)))
-        tensor = torch.from_numpy(chunk).float()
-        return self._model(tensor, self.sample_rate).item()
+        with torch.inference_mode():
+            tensor = torch.from_numpy(chunk).float()
+            return float(self._model(tensor, self.sample_rate).item())
 
     def _energy_confidence(self, audio_chunk: np.ndarray) -> float:
         rms = float(np.sqrt(np.mean(audio_chunk**2)))
