@@ -1,5 +1,7 @@
 import logging
 import re
+from contextlib import nullcontext
+
 import numpy as np
 import torch
 
@@ -29,15 +31,51 @@ class SenseVoiceEngine:
         local = get_local_model_path("sensevoice", hub=hub)
         model = local or model_name or asr_model_id("sensevoice", hub)
         neutralize_funasr_requirements(local)
-        self._model = AutoModel(
-            model=model,
-            trust_remote_code=True,
-            device=device,
-            hub=hub,
-            disable_update=True,
-        )
+        self._set_precision(device)
+        model_kwargs = {
+            "model": model,
+            "trust_remote_code": True,
+            "device": device,
+            "hub": hub,
+            "disable_update": True,
+        }
+        if self._use_fp16:
+            model_kwargs["fp16"] = True
+        self._model = AutoModel(**model_kwargs)
+        device = self._model.kwargs.get("device", device)
+        self._set_precision(device)
+        self._update_runtime_kwargs(device)
         self.language = None  # None = auto detect
-        log.info(f"SenseVoice loaded: {model} on {device} (hub={hub})")
+        log.info(
+            f"SenseVoice loaded: {model} on {device} "
+            f"(hub={hub}, precision={self._precision})"
+        )
+
+    @staticmethod
+    def _is_cuda_device(device: str) -> bool:
+        return str(device).lower().startswith("cuda") and torch.cuda.is_available()
+
+    def _set_precision(self, device: str):
+        self._use_fp16 = self._is_cuda_device(device)
+        self._precision = "fp16" if self._use_fp16 else "fp32"
+
+    def _apply_model_precision(self):
+        model = self._model.model
+        if self._use_fp16:
+            model.half()
+        else:
+            model.float()
+
+    def _update_runtime_kwargs(self, device: str):
+        self._model.kwargs["device"] = device
+        self._model.kwargs["fp16"] = self._use_fp16
+        if not self._use_fp16:
+            self._model.kwargs.pop("bf16", None)
+
+    def _autocast_context(self):
+        if self._use_fp16:
+            return torch.autocast(device_type="cuda", dtype=torch.float16)
+        return nullcontext()
 
     def set_language(self, language: str):
         old = self.language
@@ -45,8 +83,15 @@ class SenseVoiceEngine:
         log.info(f"SenseVoice language: {old} -> {self.language}")
 
     def to_device(self, device: str):
-        self._model.model.to(device)
-        log.info(f"SenseVoice moved to {device}")
+        self._set_precision(device)
+        if self._use_fp16:
+            self._apply_model_precision()
+            self._model.model.to(device)
+        else:
+            self._model.model.to(device)
+            self._apply_model_precision()
+        self._update_runtime_kwargs(device)
+        log.info(f"SenseVoice moved to {device} (precision={self._precision})")
 
     def unload(self):
         if hasattr(self, "_model") and self._model is not None:
@@ -65,7 +110,7 @@ class SenseVoiceEngine:
         Returns:
             dict with 'text', 'language', 'language_name' or None.
         """
-        with torch.inference_mode():
+        with torch.inference_mode(), self._autocast_context():
             result = self._model.generate(
                 input=audio,
                 cache={},
