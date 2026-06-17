@@ -74,18 +74,21 @@ class AnimeWhisperEngine:
         if audio.dtype != np.float32:
             audio = audio.astype(np.float32)
 
+        import torch
+
         # anime-whisper README: disable initial_prompt, suppress repetitions
-        result = self._pipe(
-            audio,
-            generate_kwargs={
-                "language": "Japanese",
-                "task": "transcribe",
-                "do_sample": False,
-                "num_beams": 1,
-                "no_repeat_ngram_size": 5,
-                "repetition_penalty": 1.0,
-            },
-        )
+        with torch.inference_mode():
+            result = self._pipe(
+                audio,
+                generate_kwargs={
+                    "language": "Japanese",
+                    "task": "transcribe",
+                    "do_sample": False,
+                    "num_beams": 1,
+                    "no_repeat_ngram_size": 5,
+                    "repetition_penalty": 1.0,
+                },
+            )
 
         text = (result or {}).get("text", "").strip()
         if not text:

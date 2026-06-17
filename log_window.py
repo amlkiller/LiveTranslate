@@ -41,6 +41,8 @@ class LogWindow(QWidget):
         # Log display
         self._text = QTextEdit()
         self._text.setReadOnly(True)
+        self._text.setUndoRedoEnabled(False)
+        self._text.document().setMaximumBlockCount(2000)
         self._text.setFont(QFont("Consolas", 9))
         self._text.setStyleSheet("background-color: #1e1e1e; color: #d4d4d4;")
         layout.addWidget(self._text)

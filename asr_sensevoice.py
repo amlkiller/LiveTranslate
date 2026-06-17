@@ -1,6 +1,7 @@
 import logging
 import re
 import numpy as np
+import torch
 
 log = logging.getLogger("LiveTranslate.SenseVoice")
 
@@ -64,14 +65,15 @@ class SenseVoiceEngine:
         Returns:
             dict with 'text', 'language', 'language_name' or None.
         """
-        result = self._model.generate(
-            input=audio,
-            cache={},
-            language=self.language or "auto",
-            use_itn=True,
-            batch_size_s=0,
-            disable_pbar=True,
-        )
+        with torch.inference_mode():
+            result = self._model.generate(
+                input=audio,
+                cache={},
+                language=self.language or "auto",
+                use_itn=True,
+                batch_size_s=0,
+                disable_pbar=True,
+            )
 
         if not result or not result[0].get("text"):
             return None

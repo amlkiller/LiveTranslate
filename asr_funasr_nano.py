@@ -5,6 +5,7 @@ import tempfile
 import wave
 import re
 import numpy as np
+import torch
 
 log = logging.getLogger("LiveTranslate.FunASR-Nano")
 
@@ -102,7 +103,8 @@ class FunASRNanoEngine:
             if self.language:
                 kwargs["language"] = self.language
 
-            result = self._model.generate(**kwargs)
+            with torch.inference_mode():
+                result = self._model.generate(**kwargs)
         finally:
             try:
                 os.unlink(tmp)

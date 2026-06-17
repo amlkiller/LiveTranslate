@@ -59,8 +59,7 @@ class ASREngine:
             audio,
             language=self.language,
             beam_size=5,
-            vad_filter=True,
-            vad_parameters=dict(min_silence_duration_ms=500),
+            vad_filter=False,
             word_timestamps=word_timestamps,
         )
 

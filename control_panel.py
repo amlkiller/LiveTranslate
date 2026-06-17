@@ -406,7 +406,7 @@ class ControlPanel(QWidget):
 
         self._incremental_asr_cb = QCheckBox(t("label_incremental_asr"))
         self._incremental_asr_cb.setToolTip(t("incremental_asr_tooltip"))
-        self._incremental_asr_cb.setChecked(s.get("incremental_asr", True))
+        self._incremental_asr_cb.setChecked(s.get("incremental_asr", False))
         self._incremental_asr_cb.toggled.connect(self._on_timing_changed)
         self._incremental_asr_cb.toggled.connect(self._auto_save)
         timing_layout.addWidget(self._incremental_asr_cb, 4, 0)
@@ -416,7 +416,7 @@ class ControlPanel(QWidget):
         self._interim_interval_spin.setSingleStep(0.5)
         self._interim_interval_spin.setValue(s.get("interim_interval", 2.0))
         self._interim_interval_spin.setSuffix(" s")
-        self._interim_interval_spin.setEnabled(s.get("incremental_asr", True))
+        self._interim_interval_spin.setEnabled(s.get("incremental_asr", False))
         self._interim_interval_spin.valueChanged.connect(self._on_timing_changed)
         self._interim_interval_spin.valueChanged.connect(self._auto_save)
         self._incremental_asr_cb.toggled.connect(self._interim_interval_spin.setEnabled)
@@ -1308,6 +1308,8 @@ class ControlPanel(QWidget):
         if prompt_text:
             self._current_settings["system_prompt"] = prompt_text
         self._current_settings["timeout"] = self._timeout_spin.value()
+        if hasattr(self, "_incremental_asr_cb"):
+            self._on_timing_changed()
         if hasattr(self, "_auto_save_transcript_cb"):
             self._current_settings["auto_save_transcript"] = (
                 self._auto_save_transcript_cb.isChecked()

@@ -8,6 +8,7 @@ import signal
 import logging
 import threading
 import queue
+import gc
 from concurrent.futures import ThreadPoolExecutor
 import yaml
 import time
@@ -195,10 +196,10 @@ class LiveTranslateApp:
         self._mem_proc = psutil.Process(os.getpid())
         self._mem_baseline_mb = self._mem_proc.memory_info().rss / 1024 / 1024
         self._mem_last_mb = self._mem_baseline_mb
-        self._mem_seg_count = 0
+        self._mem_asr_call_count = 0
         self._mem_periodic_timer = None
-        # Memory ceiling: warn once when RSS exceeds threshold (FunASR has a
-        # known C-side leak ~5MB/seg that GC can't reclaim; user restarts when needed)
+        # Memory ceiling: warn once when RSS exceeds threshold. ASR backends keep
+        # native-side workspaces/caches that Python GC cannot always reclaim.
         self._mem_threshold_mb = 4096
         self._mem_warned = False
         self._mem_warning_callback = None
@@ -214,7 +215,7 @@ class LiveTranslateApp:
         self._last_msg_id = 0
 
         # Incremental ASR state
-        self._incremental_enabled = True
+        self._incremental_enabled = False
         self._interim_interval = 2.0
         self._interim_pending = ""
         self._interim_active = False
@@ -260,13 +261,7 @@ class LiveTranslateApp:
                         self._overlay.update_asr_device(
                             f"{display_name} [{new_device}]"
                         )
-                    import gc
-
-                    gc.collect()
-                    try:
-                        torch.cuda.empty_cache()
-                    except Exception:
-                        pass
+                    self._release_memory_caches()
                 else:
                     self._asr_type = None  # ctranslate2: force reload
             else:
@@ -416,6 +411,7 @@ class LiveTranslateApp:
                     if hasattr(old_engine, "unload"):
                         old_engine.unload()
                     old_engine = None
+                    self._release_memory_caches()
                 dev = device
                 dev_index = 0
                 if dev.startswith("cuda:"):
@@ -512,19 +508,44 @@ class LiveTranslateApp:
             "vad_buf": vad_buf,
         }
 
-    def _log_mem_after_segment(self):
-        self._mem_seg_count += 1
+    def _log_mem_after_asr(self, kind: str, audio_seconds: float, asr_ms: float):
+        self._mem_asr_call_count += 1
         snap = self._mem_snapshot()
         delta = snap["rss"] - self._mem_last_mb
         total_delta = snap["rss"] - self._mem_baseline_mb
         self._mem_last_mb = snap["rss"]
         log.info(
-            f"MEM[seg#{self._mem_seg_count}] RSS={snap['rss']:.1f}MB "
+            f"MEM[asr#{self._mem_asr_call_count}:{kind}] RSS={snap['rss']:.1f}MB "
             f"(Δ{delta:+.2f} since last, {total_delta:+.1f} since start) "
             f"GPU(alloc/reserved)={snap['gpu_alloc']:.0f}/{snap['gpu_reserved']:.0f}MB "
-            f"msgs={snap['msgs']} vad_buf={snap['vad_buf']}"
+            f"audio={audio_seconds:.1f}s asr={asr_ms:.0f}ms "
+            f"outputs={self._asr_count} msgs={snap['msgs']} vad_buf={snap['vad_buf']}"
         )
         self._check_memory_threshold(snap["rss"])
+
+    def _release_memory_caches(self):
+        gc.collect()
+        try:
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+        except Exception:
+            pass
+
+    def _run_asr(self, audio: np.ndarray, kind: str, **kwargs):
+        audio_seconds = len(audio) / 16000
+        asr_start = time.perf_counter()
+        with self._asr_lock:
+            if not self._asr_ready or self._asr is None:
+                return None, 0.0
+            try:
+                result = self._asr.transcribe(audio, **kwargs)
+            except Exception:
+                asr_ms = (time.perf_counter() - asr_start) * 1000
+                self._log_mem_after_asr(f"{kind}:error", audio_seconds, asr_ms)
+                raise
+        asr_ms = (time.perf_counter() - asr_start) * 1000
+        self._log_mem_after_asr(kind, audio_seconds, asr_ms)
+        return result, asr_ms
 
     def _check_memory_threshold(self, rss_mb: float):
         if self._mem_warned or rss_mb < self._mem_threshold_mb:
@@ -550,7 +571,7 @@ class LiveTranslateApp:
         log.info(
             f"MEM[tick] RSS={snap['rss']:.1f}MB ({total_delta:+.1f} since start) "
             f"GPU(alloc/reserved)={snap['gpu_alloc']:.0f}/{snap['gpu_reserved']:.0f}MB "
-            f"msgs={snap['msgs']} segs={self._mem_seg_count} "
+            f"msgs={snap['msgs']} asr_calls={self._mem_asr_call_count} "
             f"asr_count={self._asr_count} tl_count={self._translate_count}"
         )
         self._check_memory_threshold(snap["rss"])
@@ -716,7 +737,7 @@ class LiveTranslateApp:
         log.info(
             f"MEM[stop] RSS={snap['rss']:.1f}MB ({total_delta:+.1f} since start) "
             f"GPU(alloc/reserved)={snap['gpu_alloc']:.0f}/{snap['gpu_reserved']:.0f}MB "
-            f"segs={self._mem_seg_count}"
+            f"asr_calls={self._mem_asr_call_count} outputs={self._asr_count}"
         )
         log.info("Pipeline stopped")
 
@@ -740,16 +761,13 @@ class LiveTranslateApp:
         seg_len = len(speech_segment) / 16000
         log.info(f"Speech segment: {seg_len:.1f}s")
 
-        asr_start = time.perf_counter()
-        with self._asr_lock:
-            if not self._asr_ready or self._asr is None:
-                return
-            try:
-                result = self._asr.transcribe(speech_segment)
-            except Exception as e:
-                log.error(f"ASR error: {e}", exc_info=True)
-                return
-        asr_ms = (time.perf_counter() - asr_start) * 1000
+        try:
+            result, asr_ms = self._run_asr(speech_segment, "segment")
+        except Exception as e:
+            log.error(f"ASR error: {e}", exc_info=True)
+            return
+        if asr_ms == 0:
+            return
         if asr_ms > 10000:
             log.warning(f"ASR took {asr_ms:.0f}ms, possible hang")
         if result is None:
@@ -836,7 +854,6 @@ class LiveTranslateApp:
                 )
             except RuntimeError:
                 log.warning("Translation executor shut down, skipping")
-        self._log_mem_after_segment()
 
     # ── Incremental ASR ──
 
@@ -908,18 +925,20 @@ class LiveTranslateApp:
         if duration < 1.5:
             return False
 
-        use_word_ts = self._asr_type == "whisper"
+        # Word timestamp alignment is expensive for repeated interim passes.
+        # The proportional trim path below is less exact but keeps long runs stable.
+        use_word_ts = False
 
-        asr_start = time.perf_counter()
-        with self._asr_lock:
-            if not self._asr_ready or self._asr is None:
-                return False
-            try:
-                result = self._asr.transcribe(audio, word_timestamps=use_word_ts) if use_word_ts else self._asr.transcribe(audio)
-            except Exception as e:
-                log.error(f"Interim ASR error: {e}", exc_info=True)
-                return False
-        asr_ms = (time.perf_counter() - asr_start) * 1000
+        try:
+            result, asr_ms = self._run_asr(
+                audio, "interim", word_timestamps=use_word_ts
+            ) if use_word_ts else self._run_asr(audio, "interim")
+        except Exception as e:
+            log.error(f"Interim ASR error: {e}", exc_info=True)
+            return False
+
+        if asr_ms == 0:
+            return False
 
         if result is None:
             return False
@@ -1060,23 +1079,18 @@ class LiveTranslateApp:
                 self._tl_executor.submit(self._translate_async, msg_id, original_text, source_lang, extra_langs or None)
             except RuntimeError:
                 log.warning("Translation executor shut down, skipping")
-        self._log_mem_after_segment()
-
     def _process_interim_final(self, speech_segment):
         """Handle VAD flush after interim outputs were already made."""
         seg_len = len(speech_segment) / 16000
         log.info(f"Interim final segment: {seg_len:.1f}s")
 
-        asr_start = time.perf_counter()
-        with self._asr_lock:
-            if not self._asr_ready or self._asr is None:
-                return
-            try:
-                result = self._asr.transcribe(speech_segment)
-            except Exception as e:
-                log.error(f"Interim final ASR error: {e}", exc_info=True)
-                return
-        asr_ms = (time.perf_counter() - asr_start) * 1000
+        try:
+            result, asr_ms = self._run_asr(speech_segment, "interim_final")
+        except Exception as e:
+            log.error(f"Interim final ASR error: {e}", exc_info=True)
+            return
+        if asr_ms == 0:
+            return
 
         if result is None:
             # Flush any remaining pending
@@ -1202,8 +1216,8 @@ class LiveTranslateApp:
                 self._interim_committed_tail = ""
             elif seg_type == "interim":
                 self._drain_interim_duplicates()
-                committed = self._do_interim_asr()
-                if committed:
+                self._do_interim_asr()
+                with self._vad_lock:
                     self._last_interim_samples = self._vad._speech_samples
 
     def _drain_interim_duplicates(self):
