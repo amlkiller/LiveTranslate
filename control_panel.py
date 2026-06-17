@@ -106,6 +106,12 @@ class ControlPanel(QWidget):
                 "asr_language": config["asr"].get("language", "auto"),
                 "asr_engine": "sensevoice",
                 "asr_device": "cuda",
+                "sensevoice_pad_seconds": config["asr"].get(
+                    "sensevoice_pad_seconds", 0.5
+                ),
+                "whisper_pad_seconds": config["asr"].get(
+                    "whisper_pad_seconds", 0.5
+                ),
                 "models": [
                     {
                         "name": f"{tc['model']}",
@@ -129,6 +135,15 @@ class ControlPanel(QWidget):
                 }
             ]
             self._current_settings["active_model"] = 0
+
+        self._current_settings.setdefault(
+            "sensevoice_pad_seconds",
+            config["asr"].get("sensevoice_pad_seconds", 0.5),
+        )
+        self._current_settings.setdefault(
+            "whisper_pad_seconds",
+            config["asr"].get("whisper_pad_seconds", 0.5),
+        )
 
         layout = QVBoxLayout(self)
         tabs = QTabWidget()
@@ -225,6 +240,40 @@ class ControlPanel(QWidget):
         asr_layout.addWidget(self._asr_device, 2, 1)
         self._asr_device.currentIndexChanged.connect(self._auto_save)
 
+        self._whisper_pad_label = QLabel(t("label_whisper_padding"))
+        self._whisper_pad_seconds = QDoubleSpinBox()
+        self._whisper_pad_seconds.setRange(0.0, 5.0)
+        self._whisper_pad_seconds.setDecimals(2)
+        self._whisper_pad_seconds.setSingleStep(0.1)
+        try:
+            whisper_pad_seconds = float(s.get("whisper_pad_seconds", 0.5))
+        except (TypeError, ValueError):
+            whisper_pad_seconds = 0.5
+        self._whisper_pad_seconds.setValue(whisper_pad_seconds)
+        self._whisper_pad_seconds.setSuffix(" s")
+        self._whisper_pad_seconds.setSpecialValueText(t("whisper_padding_off"))
+        self._whisper_pad_seconds.setToolTip(t("whisper_padding_tooltip"))
+        asr_layout.addWidget(self._whisper_pad_label, 3, 0)
+        asr_layout.addWidget(self._whisper_pad_seconds, 3, 1)
+        self._whisper_pad_seconds.valueChanged.connect(self._auto_save)
+
+        self._sensevoice_pad_label = QLabel(t("label_sensevoice_padding"))
+        self._sensevoice_pad_seconds = QDoubleSpinBox()
+        self._sensevoice_pad_seconds.setRange(0.0, 5.0)
+        self._sensevoice_pad_seconds.setDecimals(2)
+        self._sensevoice_pad_seconds.setSingleStep(0.1)
+        try:
+            sensevoice_pad_seconds = float(s.get("sensevoice_pad_seconds", 0.5))
+        except (TypeError, ValueError):
+            sensevoice_pad_seconds = 0.5
+        self._sensevoice_pad_seconds.setValue(sensevoice_pad_seconds)
+        self._sensevoice_pad_seconds.setSuffix(" s")
+        self._sensevoice_pad_seconds.setSpecialValueText(t("sensevoice_padding_off"))
+        self._sensevoice_pad_seconds.setToolTip(t("sensevoice_padding_tooltip"))
+        asr_layout.addWidget(self._sensevoice_pad_label, 4, 0)
+        asr_layout.addWidget(self._sensevoice_pad_seconds, 4, 1)
+        self._sensevoice_pad_seconds.valueChanged.connect(self._auto_save)
+
         self._audio_device = QComboBox()
         self._audio_device.addItem(t("audio_disabled"))
         self._audio_device.addItem(t("system_default"))
@@ -244,8 +293,8 @@ class ControlPanel(QWidget):
                 self._audio_device.setCurrentIndex(idx)
         else:
             self._audio_device.setCurrentIndex(1)  # system default
-        asr_layout.addWidget(QLabel(t("label_audio")), 3, 0)
-        asr_layout.addWidget(self._audio_device, 3, 1)
+        asr_layout.addWidget(QLabel(t("label_audio")), 5, 0)
+        asr_layout.addWidget(self._audio_device, 5, 1)
         self._audio_device.currentIndexChanged.connect(self._auto_save)
 
         self._mic_device = QComboBox()
@@ -266,16 +315,16 @@ class ControlPanel(QWidget):
                 idx = self._mic_device.findText(saved_mic)
                 if idx >= 0:
                     self._mic_device.setCurrentIndex(idx)
-        asr_layout.addWidget(QLabel(t("label_mic")), 4, 0)
-        asr_layout.addWidget(self._mic_device, 4, 1)
+        asr_layout.addWidget(QLabel(t("label_mic")), 6, 0)
+        asr_layout.addWidget(self._mic_device, 6, 1)
         self._mic_device.currentIndexChanged.connect(self._auto_save)
 
         self._hub_combo = QComboBox()
         self._hub_combo.addItems([t("hub_modelscope"), t("hub_huggingface")])
         saved_hub = s.get("hub", "ms")
         self._hub_combo.setCurrentIndex(0 if saved_hub == "ms" else 1)
-        asr_layout.addWidget(QLabel(t("label_hub")), 5, 0)
-        asr_layout.addWidget(self._hub_combo, 5, 1)
+        asr_layout.addWidget(QLabel(t("label_hub")), 7, 0)
+        asr_layout.addWidget(self._hub_combo, 7, 1)
         self._hub_combo.currentIndexChanged.connect(self._auto_save)
 
         self._ui_lang_combo = QComboBox()
@@ -284,8 +333,8 @@ class ControlPanel(QWidget):
 
         saved_lang = s.get("ui_lang", get_lang())
         self._ui_lang_combo.setCurrentIndex(0 if saved_lang == "en" else 1)
-        asr_layout.addWidget(QLabel(t("label_ui_lang")), 6, 0)
-        asr_layout.addWidget(self._ui_lang_combo, 6, 1)
+        asr_layout.addWidget(QLabel(t("label_ui_lang")), 8, 0)
+        asr_layout.addWidget(self._ui_lang_combo, 8, 1)
         self._ui_lang_combo.currentIndexChanged.connect(self._on_ui_lang_changed)
 
         layout.addWidget(asr_group)
@@ -313,6 +362,7 @@ class ControlPanel(QWidget):
         self._asr_engine.currentIndexChanged.connect(
             self._on_engine_changed_whisper_vis
         )
+        self._on_engine_changed_whisper_vis(engine_idx)
         self._update_whisper_size_label()
 
         mode_group = QGroupBox(t("group_vad_mode"))
@@ -1011,6 +1061,14 @@ class ControlPanel(QWidget):
 
     def _on_engine_changed_whisper_vis(self, index):
         self._whisper_group.setVisible(index == 0)
+        if hasattr(self, "_whisper_pad_seconds"):
+            is_whisper = index == 0
+            self._whisper_pad_label.setVisible(is_whisper)
+            self._whisper_pad_seconds.setVisible(is_whisper)
+        if hasattr(self, "_sensevoice_pad_seconds"):
+            is_sensevoice = index == 1
+            self._sensevoice_pad_label.setVisible(is_sensevoice)
+            self._sensevoice_pad_seconds.setVisible(is_sensevoice)
         # Resize window to fit content after whisper group visibility change
         def _fit():
             self.adjustSize()
@@ -1345,6 +1403,12 @@ class ControlPanel(QWidget):
             self._current_settings["mic_device"] = self._mic_device.currentText()
         self._current_settings["hub"] = (
             "ms" if self._hub_combo.currentIndex() == 0 else "hf"
+        )
+        self._current_settings["sensevoice_pad_seconds"] = round(
+            self._sensevoice_pad_seconds.value(), 2
+        )
+        self._current_settings["whisper_pad_seconds"] = round(
+            self._whisper_pad_seconds.value(), 2
         )
         prompt_text = self._prompt_edit.toPlainText().strip()
         if prompt_text:

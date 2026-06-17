@@ -4,8 +4,8 @@
 - New "Export to file" menu: original / translation / combined formats, accessible from overlay right-click menu and tray menu
 - New "Transcript persistence" (enabled by default): each session creates 3 files under `transcripts/` (original / translation / combined), appended in real time per segment — no longer bounded by the 50-message overlay cap
 - Settings panel "Cache" tab: added "Transcript persistence" group with toggle and open-folder button
-- Memory ceiling protection: tray notification shown once when RSS exceeds 4096MB, advising restart (FunASR has a ~5MB/segment C-side leak that Python GC and `torch.cuda.empty_cache` cannot reclaim)
-- New `MEM[seg/tick]` log lines: per-segment RSS / GPU (alloc/reserved) / overlay message count / VAD buffer length for memory diagnostics
+- Memory ceiling protection: tray notification shown once when RSS exceeds 4096MB, advising restart (ASR backends keep native-side workspaces/caches that Python GC and `torch.cuda.empty_cache` may not reclaim)
+- New `MEM[asr#/tick]` log lines: per-ASR-call RSS / GPU (alloc/reserved) / audio duration / overlay message count / VAD buffer length for memory diagnostics
 
 ## 2026-04-20
 - Removed Qwen3-ASR engine (ONNX + GGUF hybrid had compatibility issues; model files and llama.cpp runtime dependencies cleaned up)

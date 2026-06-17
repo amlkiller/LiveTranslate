@@ -23,6 +23,10 @@ asr:
   max_speech_duration: 8.0
   # VAD threshold (0.0 - 1.0)
   vad_threshold: 0.5
+  # SenseVoice input padding bucket in seconds (0 = disabled)
+  sensevoice_pad_seconds: 0.5
+  # faster-whisper input padding bucket in seconds (0 = disabled)
+  whisper_pad_seconds: 0.5
 
 translation:
   # OpenAI-compatible API settings

@@ -4,8 +4,8 @@
 - 新增「导出到文件」: 支持原文 / 译文 / 原文+译文 三种格式, 悬浮窗右键菜单与托盘菜单均可触发
 - 新增「转录持久化」(默认开启): 每次会话自动在 `transcripts/` 下创建 3 份文件 (原文 / 译文 / 全部), 每段识别结果实时追加写入, 不再受悬浮窗 50 条上限丢失早期文本
 - 设置面板「缓存」标签新增「转录持久化」分组: 开关 + 打开转录文件夹按钮
-- 新增内存占用上限保护: RSS 超过 4096MB 时弹托盘通知提示重启 (FunASR 在 C 层有约 5MB/段的累积缓存, Python GC 与 `torch.cuda.empty_cache` 均无法回收)
-- 日志新增 `MEM[seg/tick]` 行: 每段 ASR 完成后输出 RSS / GPU(alloc/reserved) / overlay 消息数 / VAD buffer 长度, 便于排查内存问题
+- 新增内存占用上限保护: RSS 超过 4096MB 时弹托盘通知提示重启 (ASR 后端存在 native 侧工作区/缓存, Python GC 与 `torch.cuda.empty_cache` 不一定能回收)
+- 日志新增 `MEM[asr#/tick]` 行: 每次真实 ASR 调用后输出 RSS / GPU(alloc/reserved) / 音频时长 / overlay 消息数 / VAD buffer 长度, 便于排查内存问题
 
 ## 2026-04-20
 - 移除 Qwen3-ASR 引擎 (ONNX + GGUF 方案兼容性较差, 相关模型文件和 llama.cpp 运行时依赖一并清理)

@@ -1,5 +1,6 @@
 import logging
 import gc
+import os
 
 import numpy as np
 from faster_whisper import WhisperModel
@@ -8,6 +9,9 @@ from translator import LANGUAGE_DISPLAY
 
 log = logging.getLogger("LiveTranslate.ASR")
 
+SAMPLE_RATE = 16000
+DEFAULT_PAD_SECONDS = 0.5
+PAD_SECONDS_ENV = "LIVETRANS_WHISPER_PAD_SECONDS"
 
 LANGUAGE_NAMES = {**LANGUAGE_DISPLAY, "auto": "auto"}
 
@@ -23,6 +27,7 @@ class ASREngine:
         compute_type="float16",
         language="auto",
         download_root=None,
+        pad_seconds=None,
     ):
         self.language = language if language != "auto" else None
         self._model = WhisperModel(
@@ -32,12 +37,50 @@ class ASREngine:
             compute_type=compute_type,
             download_root=download_root,
         )
+        self._set_input_padding(pad_seconds, log_change=False)
         log.info(f"Model loaded: {model_size} on {device} ({compute_type})")
+        self._log_input_padding()
+
+    @staticmethod
+    def _read_pad_seconds(value=None) -> float:
+        if value is None:
+            value = os.environ.get(PAD_SECONDS_ENV)
+        if value is None:
+            return DEFAULT_PAD_SECONDS
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            log.warning(
+                f"Invalid Whisper pad seconds={value!r}; "
+                f"using default {DEFAULT_PAD_SECONDS:g}s"
+            )
+            return DEFAULT_PAD_SECONDS
+
+    def _set_input_padding(self, pad_seconds=None, log_change=True):
+        self._pad_seconds = self._read_pad_seconds(pad_seconds)
+        self._pad_quantum = int(round(SAMPLE_RATE * self._pad_seconds))
+        if log_change:
+            self._log_input_padding()
+
+    def _log_input_padding(self):
+        if self._pad_quantum > 0:
+            log.info(
+                "Whisper input padding enabled: "
+                f"bucket={self._pad_seconds:g}s, quantum={self._pad_quantum} samples"
+            )
+        else:
+            log.info("Whisper input padding disabled")
 
     def set_language(self, language: str):
         old = self.language
         self.language = language if language != "auto" else None
         log.info(f"ASR language: {old} -> {self.language}")
+
+    def set_input_padding(self, pad_seconds):
+        old_quantum = self._pad_quantum
+        self._set_input_padding(pad_seconds, log_change=False)
+        if self._pad_quantum != old_quantum:
+            self._log_input_padding()
 
     def to_device(self, device: str):
         # ctranslate2 doesn't support device migration; must reload
@@ -58,6 +101,20 @@ class ASREngine:
         del model
         gc.collect()
 
+    def _prepare_audio_input(self, audio: np.ndarray) -> np.ndarray:
+        if self._pad_quantum <= 0 or audio.size == 0:
+            return audio
+
+        original_samples = audio.shape[0]
+        remainder = original_samples % self._pad_quantum
+        if remainder == 0:
+            return audio
+
+        padded_samples = original_samples + self._pad_quantum - remainder
+        padded = np.pad(audio, (0, padded_samples - original_samples), mode="constant")
+        log.debug(f"Whisper input padded: {original_samples} -> {padded_samples} samples")
+        return padded
+
     def transcribe(self, audio: np.ndarray, word_timestamps: bool = False) -> dict | None:
         """Transcribe audio segment.
 
@@ -68,8 +125,9 @@ class ASREngine:
         Returns:
             dict with 'text', 'language', 'language_name' (and 'words' if word_timestamps) or None.
         """
+        audio_input = self._prepare_audio_input(audio)
         segments, info = self._model.transcribe(
-            audio,
+            audio_input,
             language=self.language,
             beam_size=5,
             vad_filter=False,
