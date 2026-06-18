@@ -25,6 +25,7 @@ from model_manager import (
     is_asr_cached,
     ASR_DISPLAY_NAMES,
     MODELS_DIR,
+    local_faster_whisper_display_name,
     migrate_funasr_settings,
     normalize_asr_engine_selection,
     normalize_funasr_model_key,
@@ -413,7 +414,11 @@ class LiveTranslateApp:
         cached = is_asr_cached(engine_type, cache_model_key, hub)
         display_name = ASR_DISPLAY_NAMES.get(engine_type, engine_type)
         if engine_type == "whisper":
-            display_model = Path(cache_model_key).name if model_path else model_size
+            display_model = (
+                local_faster_whisper_display_name(model_size)
+                if model_path
+                else model_size
+            ) or Path(model_size).name
             display_name = f"Whisper {display_model}"
         elif engine_type == "funasr":
             display_name = funasr_display_name(funasr_model)

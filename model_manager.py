@@ -304,6 +304,15 @@ def list_local_faster_whisper_models() -> list[dict]:
     entries.sort(key=lambda item: item["name"].lower())
     return entries
 
+def local_faster_whisper_display_name(path) -> str | None:
+    """Return the same display name used by the local Whisper model selector."""
+    resolved = resolve_custom_whisper_model(path)
+    if not resolved:
+        return None
+    for item in list_local_faster_whisper_models():
+        if item["path"] == resolved:
+            return item["name"]
+    return _hf_snapshot_name(Path(resolved)) or Path(resolved).name
 
 def apply_cache_env():
     """Point all model caches to ./models/."""
