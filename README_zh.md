@@ -119,6 +119,7 @@ main.py                 主入口，管线编排
 ├── audio_capture.py    WASAPI loopback + 麦克风混音
 ├── vad_processor.py    Silero VAD
 ├── asr_engine.py       faster-whisper 后端
+├── asr_funasr.py       统一 FunASR 模型选择后端
 ├── asr_sensevoice.py   SenseVoice 后端
 ├── asr_funasr_nano.py  FunASR Nano 后端
 ├── asr_anime_whisper.py Anime-Whisper 后端 (日语动画/Galgame)

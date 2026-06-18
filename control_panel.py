@@ -33,12 +33,17 @@ from dialogs import (
     ModelEditDialog,
 )
 from model_manager import (
+    DEFAULT_FUNASR_MODEL,
     MODELS_DIR,
     _WHISPER_SIZES,
     dir_size,
+    funasr_model_options,
+    funasr_supports_padding,
     format_size,
     get_cache_entries,
     list_local_faster_whisper_models,
+    migrate_funasr_settings,
+    normalize_funasr_model_key,
     resolve_custom_whisper_model,
 )
 from i18n import t, LANGUAGES
@@ -53,6 +58,7 @@ def _load_saved_settings() -> dict | None:
     try:
         if SETTINGS_FILE.exists():
             data = json.loads(SETTINGS_FILE.read_text(encoding="utf-8"))
+            migrate_funasr_settings(data)
             log.info(f"Loaded saved settings from {SETTINGS_FILE}")
             return data
     except Exception as e:
@@ -90,7 +96,7 @@ class ControlPanel(QWidget):
         self.setMinimumSize(480, 560)
         self.resize(520, 650)
 
-        saved = saved_settings or _load_saved_settings()
+        saved = migrate_funasr_settings(saved_settings) or _load_saved_settings()
         if saved:
             self._current_settings = saved
         else:
@@ -104,7 +110,10 @@ class ControlPanel(QWidget):
                 "silence_mode": "auto",
                 "silence_duration": 0.8,
                 "asr_language": config["asr"].get("language", "auto"),
-                "asr_engine": "sensevoice",
+                "asr_engine": "funasr",
+                "funasr_model": config["asr"].get(
+                    "funasr_model", DEFAULT_FUNASR_MODEL
+                ),
                 "asr_device": "cuda",
                 "sensevoice_pad_seconds": config["asr"].get(
                     "sensevoice_pad_seconds", 0.5
@@ -136,6 +145,13 @@ class ControlPanel(QWidget):
             ]
             self._current_settings["active_model"] = 0
 
+        self._current_settings.setdefault(
+            "funasr_model",
+            config["asr"].get("funasr_model", DEFAULT_FUNASR_MODEL),
+        )
+        self._current_settings["funasr_model"] = normalize_funasr_model_key(
+            self._current_settings.get("funasr_model")
+        )
         self._current_settings.setdefault(
             "sensevoice_pad_seconds",
             config["asr"].get("sensevoice_pad_seconds", 0.5),
@@ -187,18 +203,14 @@ class ControlPanel(QWidget):
         self._asr_engine.addItems(
             [
                 f"[{t('asr_accurate')}] Whisper (faster-whisper)",
-                f"[{t('asr_fast')}] SenseVoice (FunASR)",
-                "Fun-ASR-Nano (FunASR)",
-                "Fun-ASR-MLT-Nano (FunASR, 31 langs)",
+                f"[{t('asr_fast')}] FunASR",
                 "Anime-Whisper (ja, anime/galgame)",
             ]
         )
         engine_map_idx = {
             "whisper": 0,
-            "sensevoice": 1,
-            "funasr-nano": 2,
-            "funasr-mlt-nano": 3,
-            "anime-whisper": 4,
+            "funasr": 1,
+            "anime-whisper": 2,
         }
         engine_idx = engine_map_idx.get(s.get("asr_engine"), 0)
         self._asr_engine.setCurrentIndex(engine_idx)
@@ -240,6 +252,22 @@ class ControlPanel(QWidget):
         asr_layout.addWidget(self._asr_device, 2, 1)
         self._asr_device.currentIndexChanged.connect(self._auto_save)
 
+        self._funasr_model_label = QLabel(t("label_funasr_model"))
+        self._funasr_model_combo = QComboBox()
+        for key, display_name in funasr_model_options():
+            self._funasr_model_combo.addItem(display_name, key)
+        saved_funasr_model = normalize_funasr_model_key(
+            s.get("funasr_model", DEFAULT_FUNASR_MODEL)
+        )
+        funasr_idx = self._funasr_model_combo.findData(saved_funasr_model)
+        if funasr_idx >= 0:
+            self._funasr_model_combo.setCurrentIndex(funasr_idx)
+        self._funasr_model_combo.currentIndexChanged.connect(
+            self._on_funasr_model_changed
+        )
+        asr_layout.addWidget(self._funasr_model_label, 3, 0)
+        asr_layout.addWidget(self._funasr_model_combo, 3, 1)
+
         self._whisper_pad_label = QLabel(t("label_whisper_padding"))
         self._whisper_pad_seconds = QDoubleSpinBox()
         self._whisper_pad_seconds.setRange(0.0, 5.0)
@@ -253,8 +281,8 @@ class ControlPanel(QWidget):
         self._whisper_pad_seconds.setSuffix(" s")
         self._whisper_pad_seconds.setSpecialValueText(t("whisper_padding_off"))
         self._whisper_pad_seconds.setToolTip(t("whisper_padding_tooltip"))
-        asr_layout.addWidget(self._whisper_pad_label, 3, 0)
-        asr_layout.addWidget(self._whisper_pad_seconds, 3, 1)
+        asr_layout.addWidget(self._whisper_pad_label, 4, 0)
+        asr_layout.addWidget(self._whisper_pad_seconds, 4, 1)
         self._whisper_pad_seconds.valueChanged.connect(self._auto_save)
 
         self._sensevoice_pad_label = QLabel(t("label_sensevoice_padding"))
@@ -270,8 +298,8 @@ class ControlPanel(QWidget):
         self._sensevoice_pad_seconds.setSuffix(" s")
         self._sensevoice_pad_seconds.setSpecialValueText(t("sensevoice_padding_off"))
         self._sensevoice_pad_seconds.setToolTip(t("sensevoice_padding_tooltip"))
-        asr_layout.addWidget(self._sensevoice_pad_label, 4, 0)
-        asr_layout.addWidget(self._sensevoice_pad_seconds, 4, 1)
+        asr_layout.addWidget(self._sensevoice_pad_label, 5, 0)
+        asr_layout.addWidget(self._sensevoice_pad_seconds, 5, 1)
         self._sensevoice_pad_seconds.valueChanged.connect(self._auto_save)
 
         self._audio_device = QComboBox()
@@ -293,8 +321,8 @@ class ControlPanel(QWidget):
                 self._audio_device.setCurrentIndex(idx)
         else:
             self._audio_device.setCurrentIndex(1)  # system default
-        asr_layout.addWidget(QLabel(t("label_audio")), 5, 0)
-        asr_layout.addWidget(self._audio_device, 5, 1)
+        asr_layout.addWidget(QLabel(t("label_audio")), 6, 0)
+        asr_layout.addWidget(self._audio_device, 6, 1)
         self._audio_device.currentIndexChanged.connect(self._auto_save)
 
         self._mic_device = QComboBox()
@@ -315,16 +343,16 @@ class ControlPanel(QWidget):
                 idx = self._mic_device.findText(saved_mic)
                 if idx >= 0:
                     self._mic_device.setCurrentIndex(idx)
-        asr_layout.addWidget(QLabel(t("label_mic")), 6, 0)
-        asr_layout.addWidget(self._mic_device, 6, 1)
+        asr_layout.addWidget(QLabel(t("label_mic")), 7, 0)
+        asr_layout.addWidget(self._mic_device, 7, 1)
         self._mic_device.currentIndexChanged.connect(self._auto_save)
 
         self._hub_combo = QComboBox()
         self._hub_combo.addItems([t("hub_modelscope"), t("hub_huggingface")])
         saved_hub = s.get("hub", "ms")
         self._hub_combo.setCurrentIndex(0 if saved_hub == "ms" else 1)
-        asr_layout.addWidget(QLabel(t("label_hub")), 7, 0)
-        asr_layout.addWidget(self._hub_combo, 7, 1)
+        asr_layout.addWidget(QLabel(t("label_hub")), 8, 0)
+        asr_layout.addWidget(self._hub_combo, 8, 1)
         self._hub_combo.currentIndexChanged.connect(self._auto_save)
 
         self._ui_lang_combo = QComboBox()
@@ -333,8 +361,8 @@ class ControlPanel(QWidget):
 
         saved_lang = s.get("ui_lang", get_lang())
         self._ui_lang_combo.setCurrentIndex(0 if saved_lang == "en" else 1)
-        asr_layout.addWidget(QLabel(t("label_ui_lang")), 8, 0)
-        asr_layout.addWidget(self._ui_lang_combo, 8, 1)
+        asr_layout.addWidget(QLabel(t("label_ui_lang")), 9, 0)
+        asr_layout.addWidget(self._ui_lang_combo, 9, 1)
         self._ui_lang_combo.currentIndexChanged.connect(self._on_ui_lang_changed)
 
         layout.addWidget(asr_group)
@@ -1061,20 +1089,35 @@ class ControlPanel(QWidget):
 
     def _on_engine_changed_whisper_vis(self, index):
         self._whisper_group.setVisible(index == 0)
+        is_funasr = index == 1
+        if hasattr(self, "_funasr_model_combo"):
+            self._funasr_model_label.setVisible(is_funasr)
+            self._funasr_model_combo.setVisible(is_funasr)
         if hasattr(self, "_whisper_pad_seconds"):
             is_whisper = index == 0
             self._whisper_pad_label.setVisible(is_whisper)
             self._whisper_pad_seconds.setVisible(is_whisper)
         if hasattr(self, "_sensevoice_pad_seconds"):
-            is_sensevoice = index == 1
-            self._sensevoice_pad_label.setVisible(is_sensevoice)
-            self._sensevoice_pad_seconds.setVisible(is_sensevoice)
+            show_funasr_pad = is_funasr and funasr_supports_padding(
+                self._selected_funasr_model()
+            )
+            self._sensevoice_pad_label.setVisible(show_funasr_pad)
+            self._sensevoice_pad_seconds.setVisible(show_funasr_pad)
         # Resize window to fit content after whisper group visibility change
         def _fit():
             self.adjustSize()
             h = self.sizeHint().height() + 20
             self.resize(self.width(), max(h, self.minimumHeight()))
         QTimer.singleShot(0, _fit)
+
+    def _selected_funasr_model(self) -> str:
+        value = self._funasr_model_combo.currentData()
+        return normalize_funasr_model_key(str(value) if value else None)
+
+    def _on_funasr_model_changed(self):
+        self._current_settings["funasr_model"] = self._selected_funasr_model()
+        self._on_engine_changed_whisper_vis(self._asr_engine.currentIndex())
+        self._auto_save()
 
     def _selected_whisper_model(self) -> str:
         value = self._whisper_size_combo.currentData()
@@ -1374,14 +1417,13 @@ class ControlPanel(QWidget):
         self._current_settings["asr_language"] = self._get_asr_lang_code()
         engine_map = {
             0: "whisper",
-            1: "sensevoice",
-            2: "funasr-nano",
-            3: "funasr-mlt-nano",
-            4: "anime-whisper",
+            1: "funasr",
+            2: "anime-whisper",
         }
-        self._current_settings["asr_engine"] = engine_map[
-            self._asr_engine.currentIndex()
-        ]
+        self._current_settings["asr_engine"] = engine_map.get(
+            self._asr_engine.currentIndex(), "whisper"
+        )
+        self._current_settings["funasr_model"] = self._selected_funasr_model()
         self._current_settings["whisper_model_size"] = (
             self._selected_whisper_model()
         )

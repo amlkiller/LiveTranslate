@@ -17,11 +17,17 @@ from pathlib import Path
 from datetime import datetime
 
 from model_manager import (
+    DEFAULT_FUNASR_MODEL,
     apply_cache_env,
+    funasr_display_name,
+    funasr_supports_padding,
     get_missing_models,
     is_asr_cached,
     ASR_DISPLAY_NAMES,
     MODELS_DIR,
+    migrate_funasr_settings,
+    normalize_asr_engine_selection,
+    normalize_funasr_model_key,
     resolve_custom_whisper_model,
 )
 
@@ -169,6 +175,9 @@ class LiveTranslateApp:
         self._asr = None
         self._asr_device = config["asr"]["device"]
         self._whisper_model_size = config["asr"]["model_size"]
+        self._funasr_model_key = normalize_funasr_model_key(
+            config["asr"].get("funasr_model", DEFAULT_FUNASR_MODEL)
+        )
         self._asr_lock = threading.Lock()
         self._vad_lock = threading.Lock()
         self._target_language = config["translation"]["target_language"]
@@ -259,9 +268,12 @@ class LiveTranslateApp:
                 if result is not False:
                     log.info(f"ASR device migrated: {old_device} -> {new_device}")
                     if self._overlay:
-                        display_name = ASR_DISPLAY_NAMES.get(
-                            self._asr_type, self._asr_type
-                        )
+                        if self._asr_type == "funasr":
+                            display_name = funasr_display_name(self._funasr_model_key)
+                        else:
+                            display_name = ASR_DISPLAY_NAMES.get(
+                                self._asr_type, self._asr_type
+                            )
                         self._overlay.update_asr_device(
                             f"{display_name} [{new_device}]"
                         )
@@ -275,6 +287,18 @@ class LiveTranslateApp:
             self._whisper_model_size = new_whisper_size
             if self._asr_type == "whisper":
                 self._asr_type = None
+        new_funasr_model = normalize_funasr_model_key(settings.get("funasr_model"))
+        if new_funasr_model != self._funasr_model_key:
+            self._funasr_model_key = new_funasr_model
+            if self._asr_type == "funasr":
+                self._asr_type = None
+        if "sensevoice_pad_seconds" in settings and self._asr:
+            if (
+                self._asr_type == "funasr"
+                and funasr_supports_padding(self._funasr_model_key)
+                and hasattr(self._asr, "set_input_padding")
+            ):
+                self._asr.set_input_padding(settings["sensevoice_pad_seconds"])
         if "asr_engine" in settings:
             self._switch_asr_engine(settings["asr_engine"])
         if "audio_device" in settings:
@@ -349,7 +373,13 @@ class LiveTranslateApp:
         self._output_price = model_config.get("output_price", 0)
 
     def _switch_asr_engine(self, engine_type: str):
-        if engine_type == self._asr_type:
+        settings = self._panel.get_settings() if self._panel else {}
+        engine_type, funasr_model = normalize_asr_engine_selection(
+            engine_type, settings.get("funasr_model", self._funasr_model_key)
+        )
+        if engine_type == self._asr_type and (
+            engine_type != "funasr" or funasr_model == self._funasr_model_key
+        ):
             return
         log.info(f"Switching ASR engine: {self._asr_type} -> {engine_type}")
         self._asr_ready = False
@@ -366,29 +396,34 @@ class LiveTranslateApp:
         hub = "ms"
         download_proxy = "system"
         if self._panel:
-            hub = self._panel.get_settings().get("hub", "ms")
-            download_proxy = self._panel.get_settings().get("download_proxy", "system")
+            hub = settings.get("hub", "ms")
+            download_proxy = settings.get("download_proxy", "system")
 
         model_size = self._config["asr"]["model_size"]
         if self._panel:
-            model_size = self._panel.get_settings().get(
-                "whisper_model_size", model_size
-            )
-        model_path = resolve_custom_whisper_model(model_size)
-        if model_path:
-            model_size = model_path
-        cached = is_asr_cached(engine_type, model_size, hub)
+            model_size = settings.get("whisper_model_size", model_size)
+        model_path = None
+        cache_model_key = model_size
+        if engine_type == "whisper":
+            model_path = resolve_custom_whisper_model(model_size)
+            if model_path:
+                cache_model_key = model_path
+        elif engine_type == "funasr":
+            cache_model_key = funasr_model
+        cached = is_asr_cached(engine_type, cache_model_key, hub)
         display_name = ASR_DISPLAY_NAMES.get(engine_type, engine_type)
         if engine_type == "whisper":
-            display_model = Path(model_size).name if model_path else model_size
+            display_model = Path(cache_model_key).name if model_path else model_size
             display_name = f"Whisper {display_model}"
+        elif engine_type == "funasr":
+            display_name = funasr_display_name(funasr_model)
 
         parent = (
             self._panel if self._panel and self._panel.isVisible() else self._overlay
         )
 
         if not cached:
-            missing = get_missing_models(engine_type, model_size, hub)
+            missing = get_missing_models(engine_type, cache_model_key, hub)
             missing = [m for m in missing if m["type"] != "silero-vad"]
             if missing:
                 dlg = ModelDownloadDialog(
@@ -430,15 +465,17 @@ class LiveTranslateApp:
                     dev_index = int(part.split(":")[1])
                     dev = "cuda"
 
-                if engine_type == "sensevoice":
-                    from asr_sensevoice import SenseVoiceEngine
+                if engine_type == "funasr":
+                    from asr_funasr import FunASREngine
 
-                    new_asr[0] = SenseVoiceEngine(device=device, hub=hub)
-                elif engine_type in ("funasr-nano", "funasr-mlt-nano"):
-                    from asr_funasr_nano import FunASRNanoEngine
-
-                    new_asr[0] = FunASRNanoEngine(
-                        device=device, hub=hub, engine_type=engine_type
+                    new_asr[0] = FunASREngine(
+                        model_key=funasr_model,
+                        device=device,
+                        hub=hub,
+                        pad_seconds=settings.get(
+                            "sensevoice_pad_seconds",
+                            self._config["asr"].get("sensevoice_pad_seconds", 0.5),
+                        ),
                     )
                 elif engine_type == "anime-whisper":
                     from asr_anime_whisper import AnimeWhisperEngine
@@ -451,7 +488,7 @@ class LiveTranslateApp:
                     if dev == "cpu" and compute == "float16":
                         compute = "int8"
                     new_asr[0] = ASREngine(
-                        model_size=model_size,
+                        model_size=cache_model_key,
                         device=dev,
                         device_index=dev_index,
                         compute_type=compute,
@@ -491,6 +528,8 @@ class LiveTranslateApp:
 
         self._asr = new_asr[0]
         self._asr_type = engine_type
+        if engine_type == "funasr":
+            self._funasr_model_key = funasr_model
         if self._panel:
             asr_lang = self._panel.get_settings().get("asr_language", "auto")
             self._asr.set_language(asr_lang)
@@ -1246,10 +1285,17 @@ def main():
     setup_logging()
     log.info("LiveTranslate starting...")
     config = load_config()
+    config.setdefault("asr", {})
+    config["asr"].setdefault("asr_engine", "funasr")
+    config["asr"].setdefault("funasr_model", DEFAULT_FUNASR_MODEL)
     saved = _load_saved_settings()
+    migrate_funasr_settings(saved)
 
     # Log actual effective config
-    _asr_eng = (saved or {}).get("asr_engine", "whisper")
+    _asr_eng = (saved or {}).get("asr_engine", config["asr"].get("asr_engine", "funasr"))
+    _funasr_model = (saved or {}).get(
+        "funasr_model", config["asr"].get("funasr_model", DEFAULT_FUNASR_MODEL)
+    )
     _active_idx = (saved or {}).get("active_model", 0)
     _models = (saved or {}).get("models", [])
     if 0 <= _active_idx < len(_models):
@@ -1257,7 +1303,13 @@ def main():
         _model_info = f"{_m.get('name', '?')} ({_m.get('model', '?')})"
     else:
         _model_info = f"{config['translation']['model']} (default)"
-    log.info(f"Config loaded: ASR={_asr_eng}, Translator={_model_info}")
+    if _asr_eng == "funasr":
+        log.info(
+            f"Config loaded: ASR={_asr_eng}/{_funasr_model}, "
+            f"Translator={_model_info}"
+        )
+    else:
+        log.info(f"Config loaded: ASR={_asr_eng}, Translator={_model_info}")
 
     # Apply UI language before creating any widgets
     if saved and saved.get("ui_lang"):
@@ -1311,9 +1363,15 @@ def main():
 
     # Non-first launch but models missing → download dialog
     else:
+        saved = saved or {}
+        current_engine = saved.get("asr_engine", config["asr"].get("asr_engine", "funasr"))
         missing = get_missing_models(
-            saved.get("asr_engine", "sensevoice"),
-            saved.get("whisper_model_size", config["asr"]["model_size"]),
+            current_engine,
+            (
+                saved.get("funasr_model", config["asr"].get("funasr_model"))
+                if current_engine == "funasr"
+                else saved.get("whisper_model_size", config["asr"]["model_size"])
+            ),
             saved.get("hub", "ms"),
         )
         if missing:

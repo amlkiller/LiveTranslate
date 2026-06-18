@@ -4,6 +4,7 @@ __pycache__/
 .venv/
 models/
 logs/
+docs/
 transcripts/
 user_settings.json
 

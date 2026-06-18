@@ -72,6 +72,47 @@ ASR_MODEL_IDS = {
     "anime-whisper": "litagin/anime-whisper",
 }
 
+FUNASR_MODEL_PROFILES = {
+    "sensevoice-small": {
+        "display_name": "SenseVoice Small",
+        "family": "sensevoice",
+        "legacy_engine": "sensevoice",
+        "modelscope_id": "iic/SenseVoiceSmall",
+        "huggingface_id": "FunAudioLLM/SenseVoiceSmall",
+        "estimated_bytes": 940_000_000,
+        "supports_padding": True,
+        "supports_language": True,
+    },
+    "funasr-nano-2512": {
+        "display_name": "Fun-ASR-Nano",
+        "family": "funasr-nano",
+        "legacy_engine": "funasr-nano",
+        "modelscope_id": "FunAudioLLM/Fun-ASR-Nano-2512",
+        "huggingface_id": "FunAudioLLM/Fun-ASR-Nano-2512",
+        "estimated_bytes": 1_050_000_000,
+        "supports_padding": False,
+        "supports_language": True,
+    },
+    "funasr-mlt-nano-2512": {
+        "display_name": "Fun-ASR-MLT-Nano",
+        "family": "funasr-nano",
+        "legacy_engine": "funasr-mlt-nano",
+        "modelscope_id": "FunAudioLLM/Fun-ASR-MLT-Nano-2512",
+        "huggingface_id": "FunAudioLLM/Fun-ASR-MLT-Nano-2512",
+        "estimated_bytes": 1_050_000_000,
+        "supports_padding": False,
+        "supports_language": True,
+    },
+}
+
+DEFAULT_FUNASR_MODEL = "sensevoice-small"
+
+FUNASR_LEGACY_ENGINE_ALIASES = {
+    "sensevoice": "sensevoice-small",
+    "funasr-nano": "funasr-nano-2512",
+    "funasr-mlt-nano": "funasr-mlt-nano-2512",
+}
+
 # HuggingFace repo ids for engines whose namespace differs from ModelScope.
 # SenseVoice lives under `iic/` on ModelScope but `FunAudioLLM/` on HuggingFace.
 ASR_MODEL_IDS_HF = {
@@ -79,13 +120,20 @@ ASR_MODEL_IDS_HF = {
 }
 
 
-def asr_model_id(engine_type: str, hub: str = "ms") -> str:
+def asr_model_id(
+    engine_type: str, hub: str = "ms", funasr_model: str | None = None
+) -> str:
     """Return the repo id for an engine on the given hub ('ms' or 'hf')."""
+    if engine_type == "funasr":
+        return funasr_model_id(funasr_model, hub)
+    if engine_type in FUNASR_LEGACY_ENGINE_ALIASES:
+        return funasr_model_id(FUNASR_LEGACY_ENGINE_ALIASES[engine_type], hub)
     if hub == "hf" and engine_type in ASR_MODEL_IDS_HF:
         return ASR_MODEL_IDS_HF[engine_type]
     return ASR_MODEL_IDS[engine_type]
 
 ASR_DISPLAY_NAMES = {
+    "funasr": "FunASR",
     "sensevoice": "SenseVoice Small",
     "funasr-nano": "Fun-ASR-Nano",
     "funasr-mlt-nano": "Fun-ASR-MLT-Nano",
@@ -109,11 +157,67 @@ _MODEL_SIZE_BYTES = {
 _WHISPER_SIZES = ["tiny", "base", "small", "medium", "large-v3"]
 
 _CACHE_MODELS = [
-    ("SenseVoice Small", "sensevoice"),
-    ("Fun-ASR-Nano", "funasr-nano"),
-    ("Fun-ASR-MLT-Nano", "funasr-mlt-nano"),
+    ("SenseVoice Small", "funasr", "sensevoice-small"),
+    ("Fun-ASR-Nano", "funasr", "funasr-nano-2512"),
+    ("Fun-ASR-MLT-Nano", "funasr", "funasr-mlt-nano-2512"),
     ("Anime-Whisper", "anime-whisper"),
 ]
+
+
+def normalize_funasr_model_key(model_key: str | None) -> str:
+    if model_key in FUNASR_MODEL_PROFILES:
+        return model_key
+    if model_key in FUNASR_LEGACY_ENGINE_ALIASES:
+        return FUNASR_LEGACY_ENGINE_ALIASES[model_key]
+    return DEFAULT_FUNASR_MODEL
+
+
+def normalize_asr_engine_selection(
+    engine_type: str | None, funasr_model: str | None = None
+) -> tuple[str, str]:
+    if engine_type in FUNASR_LEGACY_ENGINE_ALIASES:
+        return "funasr", FUNASR_LEGACY_ENGINE_ALIASES[engine_type]
+    if engine_type == "funasr":
+        return "funasr", normalize_funasr_model_key(funasr_model)
+    return engine_type or "funasr", normalize_funasr_model_key(funasr_model)
+
+
+def migrate_funasr_settings(settings: dict | None) -> dict | None:
+    if not settings:
+        return settings
+    engine, model_key = normalize_asr_engine_selection(
+        settings.get("asr_engine"), settings.get("funasr_model")
+    )
+    settings["asr_engine"] = engine
+    if engine == "funasr":
+        settings["funasr_model"] = model_key
+    else:
+        settings.setdefault("funasr_model", DEFAULT_FUNASR_MODEL)
+    return settings
+
+
+def funasr_profile(model_key: str | None) -> dict:
+    return FUNASR_MODEL_PROFILES[normalize_funasr_model_key(model_key)]
+
+
+def funasr_model_options() -> list[tuple[str, str]]:
+    return [
+        (key, profile["display_name"])
+        for key, profile in FUNASR_MODEL_PROFILES.items()
+    ]
+
+
+def funasr_display_name(model_key: str | None) -> str:
+    return funasr_profile(model_key)["display_name"]
+
+
+def funasr_supports_padding(model_key: str | None) -> bool:
+    return bool(funasr_profile(model_key).get("supports_padding"))
+
+
+def funasr_model_id(model_key: str | None, hub: str = "ms") -> str:
+    profile = funasr_profile(model_key)
+    return profile["huggingface_id"] if hub == "hf" else profile["modelscope_id"]
 
 
 def _custom_whisper_path(value) -> Path | None:
@@ -266,13 +370,18 @@ def _hf_repo_complete(org: str, name: str, min_bytes: int = 50_000_000) -> bool:
 
 
 def is_asr_cached(engine_type, model_size="medium", hub="ms") -> bool:
-    if engine_type in ("sensevoice", "funasr-nano", "funasr-mlt-nano"):
+    if engine_type == "funasr" or engine_type in FUNASR_LEGACY_ENGINE_ALIASES:
+        model_key = (
+            FUNASR_LEGACY_ENGINE_ALIASES[engine_type]
+            if engine_type in FUNASR_LEGACY_ENGINE_ALIASES
+            else normalize_funasr_model_key(model_size)
+        )
         # Accept cache from either hub to avoid redundant downloads; the repo
         # namespace can differ between ModelScope and HuggingFace (SenseVoice).
-        ms_org, ms_name = asr_model_id(engine_type, "ms").split("/")
+        ms_org, ms_name = funasr_model_id(model_key, "ms").split("/")
         if _ms_model_path(ms_org, ms_name).exists():
             return True
-        hf_org, hf_name = asr_model_id(engine_type, "hf").split("/")
+        hf_org, hf_name = funasr_model_id(model_key, "hf").split("/")
         if _hf_repo_complete(hf_org, hf_name):
             return True
         return False
@@ -322,29 +431,52 @@ def get_missing_models(engine, model_size, hub) -> list:
     if not is_asr_cached(engine, model_size, hub):
         if engine == "whisper" and model_size not in _WHISPER_SIZES:
             return missing
-        key = engine if engine != "whisper" else f"whisper-{model_size}"
-        display = ASR_DISPLAY_NAMES.get(engine, engine)
-        if engine == "whisper":
+        if engine == "funasr" or engine in FUNASR_LEGACY_ENGINE_ALIASES:
+            model_key = (
+                FUNASR_LEGACY_ENGINE_ALIASES[engine]
+                if engine in FUNASR_LEGACY_ENGINE_ALIASES
+                else normalize_funasr_model_key(model_size)
+            )
+            profile = funasr_profile(model_key)
+            key = f"funasr:{model_key}"
+            display = profile["display_name"]
+            estimated_bytes = profile["estimated_bytes"]
+        elif engine == "whisper":
+            key = engine if engine != "whisper" else f"whisper-{model_size}"
             display = f"Whisper {model_size}"
+            estimated_bytes = _MODEL_SIZE_BYTES.get(key, 0)
+        else:
+            key = engine
+            display = ASR_DISPLAY_NAMES.get(engine, engine)
+            estimated_bytes = _MODEL_SIZE_BYTES.get(key, 0)
         missing.append(
             {
                 "name": display,
                 "type": key,
-                "estimated_bytes": _MODEL_SIZE_BYTES.get(key, 0),
+                "estimated_bytes": estimated_bytes,
             }
         )
     return missing
 
 
-def get_local_model_path(engine_type, hub="ms"):
+def get_local_model_path(engine_type, hub="ms", funasr_model: str | None = None):
     """Return local snapshot path if model is cached, else None.
 
     Checks the preferred hub first, then falls back to the other hub.
     """
-    if engine_type not in ASR_MODEL_IDS:
+    if engine_type == "funasr" or engine_type in FUNASR_LEGACY_ENGINE_ALIASES:
+        model_key = (
+            FUNASR_LEGACY_ENGINE_ALIASES[engine_type]
+            if engine_type in FUNASR_LEGACY_ENGINE_ALIASES
+            else normalize_funasr_model_key(funasr_model)
+        )
+        ms_org, ms_name = funasr_model_id(model_key, "ms").split("/")
+        hf_org, hf_name = funasr_model_id(model_key, "hf").split("/")
+    elif engine_type in ASR_MODEL_IDS:
+        ms_org, ms_name = asr_model_id(engine_type, "ms").split("/")
+        hf_org, hf_name = asr_model_id(engine_type, "hf").split("/")
+    else:
         return None
-    ms_org, ms_name = asr_model_id(engine_type, "ms").split("/")
-    hf_org, hf_name = asr_model_id(engine_type, "hf").split("/")
 
     def _try_ms():
         local = _ms_model_path(ms_org, ms_name)
@@ -425,20 +557,27 @@ def download_asr(engine, model_size="medium", hub="ms", proxy="system"):
     ms_cache = os.path.join(resolved, "modelscope")
     hf_cache = os.path.join(resolved, "huggingface", "hub")
     with _proxy_env(proxy):
-        if engine in ("sensevoice", "funasr-nano", "funasr-mlt-nano"):
+        if engine == "funasr" or engine in FUNASR_LEGACY_ENGINE_ALIASES:
+            model_key = (
+                FUNASR_LEGACY_ENGINE_ALIASES[engine]
+                if engine in FUNASR_LEGACY_ENGINE_ALIASES
+                else normalize_funasr_model_key(model_size)
+            )
             if hub == "ms":
                 from modelscope import snapshot_download
 
-                model_id = asr_model_id(engine, "ms")
+                model_id = funasr_model_id(model_key, "ms")
                 log.info(f"Downloading {model_id} from ModelScope...")
                 snapshot_download(model_id=model_id, cache_dir=ms_cache)
             else:
                 from huggingface_hub import snapshot_download
 
-                model_id = asr_model_id(engine, "hf")
+                model_id = funasr_model_id(model_key, "hf")
                 log.info(f"Downloading {model_id} from HuggingFace...")
                 snapshot_download(repo_id=model_id, cache_dir=hf_cache)
-            neutralize_funasr_requirements(get_local_model_path(engine, hub=hub))
+            neutralize_funasr_requirements(
+                get_local_model_path("funasr", hub=hub, funasr_model=model_key)
+            )
         elif engine == "anime-whisper":
             # HF-only, ignore hub setting
             from huggingface_hub import snapshot_download
@@ -505,9 +644,14 @@ def get_cache_entries():
     hf_base = MODELS_DIR / "huggingface" / "hub"
     torch_base = MODELS_DIR / "torch" / "hub"
 
-    for name, engine in _CACHE_MODELS:
-        ms_org, ms_model = asr_model_id(engine, "ms").split("/")
-        hf_org, hf_model = asr_model_id(engine, "hf").split("/")
+    for entry in _CACHE_MODELS:
+        if len(entry) == 3:
+            name, engine, model_key = entry
+        else:
+            name, engine = entry
+            model_key = None
+        ms_org, ms_model = asr_model_id(engine, "ms", model_key).split("/")
+        hf_org, hf_model = asr_model_id(engine, "hf", model_key).split("/")
         ms_path = _ms_model_path(ms_org, ms_model)
         hf_path = hf_base / f"models--{hf_org}--{hf_model}"
         if ms_path.exists():

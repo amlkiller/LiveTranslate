@@ -274,7 +274,7 @@ class SetupWizardDialog(QDialog):
     def _download_worker(self, hub, proxy):
         try:
             download_silero(proxy=proxy)
-            download_asr("sensevoice", hub=hub, proxy=proxy)
+            download_asr("funasr", model_size="sensevoice-small", hub=hub, proxy=proxy)
         except Exception as e:
             self._error = str(e)
             log.error(f"Download failed: {e}", exc_info=True)
@@ -302,7 +302,8 @@ class SetupWizardDialog(QDialog):
         settings = {
             "hub": hub,
             "download_proxy": self._proxy,
-            "asr_engine": "sensevoice",
+            "asr_engine": "funasr",
+            "funasr_model": "sensevoice-small",
             "vad_mode": "silero",
             "vad_threshold": 0.3,
             "energy_threshold": 0.02,
@@ -397,6 +398,14 @@ class ModelDownloadDialog(QDialog):
                     "anime-whisper",
                 ):
                     download_asr(m["type"], hub=self._hub, proxy=self._proxy)
+                elif m["type"].startswith("funasr:"):
+                    model_key = m["type"].split(":", 1)[1]
+                    download_asr(
+                        "funasr",
+                        model_size=model_key,
+                        hub=self._hub,
+                        proxy=self._proxy,
+                    )
                 elif m["type"].startswith("whisper-"):
                     size = m["type"].replace("whisper-", "")
                     download_asr(

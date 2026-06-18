@@ -119,6 +119,7 @@ main.py                 Entry point & pipeline
 ├── audio_capture.py    WASAPI loopback + mic mix-in
 ├── vad_processor.py    Silero VAD
 ├── asr_engine.py       faster-whisper backend
+├── asr_funasr.py       Unified FunASR model selector backend
 ├── asr_sensevoice.py   SenseVoice backend
 ├── asr_funasr_nano.py  FunASR Nano backend
 ├── asr_anime_whisper.py Anime-Whisper backend (ja anime/galgame)

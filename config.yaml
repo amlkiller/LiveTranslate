@@ -9,8 +9,12 @@ audio:
   chunk_duration: 0.032
 
 asr:
+  # ASR engine: whisper, funasr, anime-whisper
+  asr_engine: "funasr"
   # Model size: tiny, base, small, medium, large-v3
   model_size: "medium"
+  # FunASR model: sensevoice-small, funasr-nano-2512, funasr-mlt-nano-2512
+  funasr_model: "sensevoice-small"
   # Device: cuda or cpu
   device: "cuda"
   # Compute type: float16, int8_float16, int8
