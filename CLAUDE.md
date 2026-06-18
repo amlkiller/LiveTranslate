@@ -26,6 +26,8 @@ main.py (LiveTranslateApp)
   |-- model_manager.py     Centralized model detection, download, cache utils
   |-- audio_capture.py     WASAPI loopback via pyaudiowpatch, auto-reconnects on device change
   |-- vad_processor.py     Silero VAD / energy-based / disabled modes, progressive silence + backtrack split
+  |-- asr_client.py        Main-process ASR worker manager (spawn, Pipe IPC, timeouts)
+  |-- asr_worker.py        ASR subprocess entrypoint; loads and owns one backend/model
   |-- asr_engine.py        faster-whisper (Whisper) backend
   |-- asr_sensevoice.py    FunASR SenseVoice backend (better for Japanese)
   |-- asr_funasr_nano.py   FunASR Nano backend
@@ -40,13 +42,15 @@ main.py (LiveTranslateApp)
   |-- log_window.py        Real-time log viewer
 ```
 
-### Threading Model
+### Threading / Process Model
 
 - **Main thread**: Qt event loop (all UI)
-- **Pipeline thread**: `_pipeline_loop` in `LiveTranslateApp` - reads audio, runs VAD/ASR/translation
-- **ASR loading**: Background thread via `_switch_asr_engine` (heavy model load, ~3-8s)
+- **Capture thread**: `_capture_loop` in `LiveTranslateApp` reads audio and runs VAD
+- **ASR queue thread**: `_asr_loop` drains VAD segments and calls `ASRClient.transcribe()`
+- **ASR worker process**: `asr_worker.py` owns the concrete ASR backend/model and runs inference over `multiprocessing.Pipe`
+- **ASR loading**: `_switch_asr_engine()` stops the current worker, then starts the target worker in a background thread; if target loading fails, it restarts the previous worker from its saved config
 - Cross-thread UI updates use **Qt signals** (e.g., `add_message_signal`, `update_translation_signal`)
-- ASR readiness tracked by `_asr_ready` flag; pipeline drops segments while loading
+- ASR readiness tracked by `_asr_ready` flag; pipeline drops segments while no ready worker exists
 
 ### Configuration
 
@@ -124,7 +128,7 @@ Key overlay features:
 2. First launch (no `user_settings.json`) → `SetupWizardDialog`: choose hub + path + download Silero+SenseVoice
 3. Non-first launch but models missing → `ModelDownloadDialog`: auto-download missing models
 4. All models ready → create main UI (overlay, panel, pipeline)
-5. Runtime ASR engine switch: if uncached → `ModelDownloadDialog`, then `_ModelLoadDialog` for GPU loading
+5. Runtime ASR engine switch: if uncached → `ModelDownloadDialog`; then `_ModelLoadDialog` while the app shuts down the current worker and loads the target worker. If target loading fails, the app tries to restore the previous worker.
 
 ### Incremental ASR
 
@@ -158,17 +162,17 @@ Continuous speech is processed incrementally to reduce latency (enabled by `incr
 - `create_app_icon()` in `main.py` generates the app icon; set globally via `app.setWindowIcon()` so all windows inherit it
 - Model cache detection (`is_asr_cached`, `get_local_model_path`) checks both ModelScope and HuggingFace paths to avoid redundant downloads when switching hubs
 - Settings log output (`_apply_settings`) filters out `models` and `system_prompt` to avoid leaking API keys
-- FunASR Nano: `asr_funasr_nano.py` does `os.chdir(model_dir)` before `AutoModel()` so relative paths in config.yaml (e.g. `Qwen3-0.6B`) resolve locally instead of triggering HuggingFace Hub network requests
+- FunASR Nano: `asr_funasr_nano.py` does `os.chdir(model_dir)` before `AutoModel()` inside the ASR worker process, so relative paths in config.yaml (e.g. `Qwen3-0.6B`) resolve locally instead of triggering HuggingFace Hub network requests, without changing the GUI process cwd
 - `Translator` defaults to 10s timeout via `make_openai_client()` to prevent API calls from hanging indefinitely
 - Log window is created at startup but hidden; shown via tray menu "Show Log"
 - Audio chunk duration is 32ms (512 samples at 16kHz), matching Silero VAD's native window size for minimal latency
 - FunASR `disable_pbar=True` required in all `generate()` calls — tqdm crashes in GUI process when flushing stderr
-- ASR engine lifecycle: each engine exposes `unload()` (move to CPU + release) and `to_device(device)` (in-place migration). Device switching uses `to_device()` for PyTorch engines (SenseVoice/FunASR) and full reload for ctranslate2 (Whisper). Release order: `unload()` → `del` → `gc.collect()` → `torch.cuda.empty_cache()`
+- ASR engine lifecycle: the GUI process never instantiates `ASREngine`, `FunASREngine`, or `AnimeWhisperEngine` directly. It owns an `ASRClient`; each worker process owns one concrete backend/model. Engine/model/device changes shut down the current worker first, then start a new worker. On target load failure, the saved previous worker config is used to restore ASR.
 - Whisper (ctranslate2) only accepts `device="cuda"` not `"cuda:0"`; device index passed via `device_index` param. Parsed from combo text like `"cuda:0 (RTX 4090)"` in `_switch_asr_engine`
 - ASR text density filter: segments ≥2s producing ≤3 alnum characters are discarded as noise
 - Settings file uses atomic write (write to `.tmp` then `os.replace`) to prevent corruption on crash
 - `stop()` joins pipeline thread before flushing VAD to prevent concurrent `_process_segment` calls
-- Cancelled ASR download/failed load restores `_asr_ready` if old engine is still available
+- Cancelled ASR download leaves the current worker running; failed target worker load attempts to restore the previous worker config
 - `Translator._build_system_prompt` catches format errors in user prompt templates, falls back to DEFAULT_PROMPT
 - Translation prompt presets: `PROMPT_PRESETS` in `translator.py` (daily/esports/anime), selectable via control panel combo
 - `translate_iter()` is a generator that yields accumulated partial text for streaming UI; `translate()` is the blocking equivalent

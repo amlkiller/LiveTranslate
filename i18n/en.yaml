@@ -227,6 +227,8 @@ override_hint: "When unchecked, uses server default or global config"
 loading_model: "Loading {name}...\nPlease wait."
 error_title: "Error"
 error_load_asr: "Failed to load ASR model:\n{error}"
+asr_restore_succeeded: "Previous ASR worker was restored."
+asr_restore_failed: "Failed to restore previous ASR worker: {error}"
 
 # Log Window
 window_log: "LiveTranslate - Log"

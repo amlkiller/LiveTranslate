@@ -42,7 +42,7 @@ import torch  # noqa: F401
 
 from audio_capture import AudioCapture
 from vad_processor import VADProcessor
-from asr_engine import ASREngine
+from asr_client import ASRClient, ASRWorkerError, ASRWorkerExited, ASRWorkerTimeout
 from translator import Translator, RepetitionError
 from transcript_writer import TranscriptWriter
 
@@ -174,12 +174,15 @@ class LiveTranslateApp:
         )
         self._asr_type = None
         self._asr = None
+        self._asr_signature = None
+        self._asr_config = None
+        self._asr_error_count = 0
         self._asr_device = config["asr"]["device"]
         self._whisper_model_size = config["asr"]["model_size"]
         self._funasr_model_key = normalize_funasr_model_key(
             config["asr"].get("funasr_model", DEFAULT_FUNASR_MODEL)
         )
-        self._asr_lock = threading.Lock()
+        self._asr_lock = threading.RLock()
         self._vad_lock = threading.Lock()
         self._target_language = config["translation"]["target_language"]
         self._translator = Translator(
@@ -257,51 +260,28 @@ class LiveTranslateApp:
         self._vad.update_settings(settings)
         if "style" in settings and self._overlay:
             self._overlay.apply_style(settings["style"])
-        if "asr_language" in settings and self._asr:
-            self._asr.set_language(settings["asr_language"])
-        # ASR compute device change: try in-place migration first
-        new_device = settings.get("asr_device")
-        if new_device and new_device != self._asr_device:
-            old_device = self._asr_device
-            self._asr_device = new_device
-            if self._asr is not None and hasattr(self._asr, "to_device"):
-                result = self._asr.to_device(new_device)
-                if result is not False:
-                    log.info(f"ASR device migrated: {old_device} -> {new_device}")
-                    if self._overlay:
-                        if self._asr_type == "funasr":
-                            display_name = funasr_display_name(self._funasr_model_key)
-                        else:
-                            display_name = ASR_DISPLAY_NAMES.get(
-                                self._asr_type, self._asr_type
-                            )
-                        self._overlay.update_asr_device(
-                            f"{display_name} [{new_device}]"
-                        )
-                    self._release_memory_caches()
-                else:
-                    self._asr_type = None  # ctranslate2: force reload
-            else:
-                self._asr_type = None  # no engine loaded: force reload
-        new_whisper_size = settings.get("whisper_model_size")
-        if new_whisper_size and new_whisper_size != self._whisper_model_size:
-            self._whisper_model_size = new_whisper_size
-            if self._asr_type == "whisper":
-                self._asr_type = None
-        new_funasr_model = normalize_funasr_model_key(settings.get("funasr_model"))
-        if new_funasr_model != self._funasr_model_key:
-            self._funasr_model_key = new_funasr_model
-            if self._asr_type == "funasr":
-                self._asr_type = None
-        if "sensevoice_pad_seconds" in settings and self._asr:
-            if (
-                self._asr_type == "funasr"
-                and funasr_supports_padding(self._funasr_model_key)
-                and hasattr(self._asr, "set_input_padding")
-            ):
-                self._asr.set_input_padding(settings["sensevoice_pad_seconds"])
-        if "asr_engine" in settings:
-            self._switch_asr_engine(settings["asr_engine"])
+        if "asr_language" in settings:
+            self._set_asr_language(settings["asr_language"])
+        if "sensevoice_pad_seconds" in settings:
+            self._set_asr_padding("funasr", settings["sensevoice_pad_seconds"])
+        if "whisper_pad_seconds" in settings:
+            self._set_asr_padding("whisper", settings["whisper_pad_seconds"])
+        if any(
+            key in settings
+            for key in (
+                "asr_engine",
+                "asr_device",
+                "whisper_model_size",
+                "funasr_model",
+                "hub",
+            )
+        ):
+            self._switch_asr_engine(
+                settings.get(
+                    "asr_engine",
+                    self._asr_type or self._config["asr"].get("asr_engine", "funasr"),
+                )
+            )
         if "audio_device" in settings:
             old_device = self._audio._device_name
             self._audio.set_device(settings["audio_device"])
@@ -324,6 +304,80 @@ class LiveTranslateApp:
             self._translator.set_timeout(settings["timeout"])
         if "auto_save_transcript" in settings:
             self._transcript.set_enabled(settings["auto_save_transcript"])
+
+    def _mark_asr_unavailable(self, reason: str, client=None):
+        with self._asr_lock:
+            current = client or self._asr
+            if client is not None and self._asr is not client:
+                return
+            self._asr_ready = False
+            self._asr = None
+            self._asr_type = None
+            self._asr_signature = None
+            self._asr_config = None
+            self._asr_error_count = 0
+        if current is not None:
+            try:
+                current.shutdown()
+            except Exception:
+                try:
+                    current.terminate()
+                except Exception:
+                    pass
+        log.warning(f"ASR worker unavailable: {reason}")
+        if self._overlay:
+            self._overlay.update_asr_device("ASR unavailable")
+
+    def _shutdown_asr_worker(self):
+        with self._asr_lock:
+            client = self._asr
+            self._asr = None
+            self._asr_ready = False
+            self._asr_type = None
+            self._asr_signature = None
+            self._asr_config = None
+            self._asr_error_count = 0
+        if client is not None:
+            log.info(f"Shutting down ASR worker: pid={client.pid}")
+            client.shutdown()
+
+    def _set_asr_language(self, language: str):
+        with self._asr_lock:
+            client = self._asr
+            if not self._asr_ready or client is None:
+                return
+            try:
+                client.set_language(language)
+            except (ASRWorkerExited, ASRWorkerTimeout) as exc:
+                self._mark_asr_unavailable(str(exc), client)
+            except ASRWorkerError as exc:
+                log.warning(f"ASR language update failed: {exc}")
+
+    def _set_asr_padding(self, engine_type: str, pad_seconds):
+        with self._asr_lock:
+            client = self._asr
+            if not self._asr_ready or client is None or self._asr_type != engine_type:
+                return
+            if engine_type == "funasr" and not funasr_supports_padding(
+                self._funasr_model_key
+            ):
+                return
+            try:
+                client.set_input_padding(pad_seconds)
+            except (ASRWorkerExited, ASRWorkerTimeout) as exc:
+                self._mark_asr_unavailable(str(exc), client)
+            except ASRWorkerError as exc:
+                log.warning(f"ASR padding update failed: {exc}")
+
+    def _load_asr_client(self, worker_config: dict) -> ASRClient:
+        client = ASRClient(worker_config)
+        try:
+            client.start()
+            client.wait_ready()
+            return client
+        except Exception:
+            client.shutdown()
+            raise
 
     def _on_target_language_changed(self, lang: str):
         self._target_language = lang
@@ -378,22 +432,7 @@ class LiveTranslateApp:
         engine_type, funasr_model = normalize_asr_engine_selection(
             engine_type, settings.get("funasr_model", self._funasr_model_key)
         )
-        if engine_type == self._asr_type and (
-            engine_type != "funasr" or funasr_model == self._funasr_model_key
-        ):
-            return
-        log.info(f"Switching ASR engine: {self._asr_type} -> {engine_type}")
-        self._asr_ready = False
-        # Reset interim state
-        self._interim_active = False
-        self._interim_pending = ""
-        self._last_interim_samples = 0
-        self._last_interim_check_time = 0.0
-        self._interim_committed_tail = ""
-        # Flush and reset VAD to stop accumulating audio during engine switch
-        self._vad.flush()
-        self._vad._reset()
-        device = self._asr_device
+        device = settings.get("asr_device", self._asr_device)
         hub = "ms"
         download_proxy = "system"
         if self._panel:
@@ -411,6 +450,39 @@ class LiveTranslateApp:
                 cache_model_key = model_path
         elif engine_type == "funasr":
             cache_model_key = funasr_model
+
+        compute = self._config["asr"]["compute_type"]
+        if engine_type == "whisper":
+            signature_model = cache_model_key
+        elif engine_type == "funasr":
+            signature_model = funasr_model
+        else:
+            signature_model = engine_type
+        signature = (engine_type, signature_model, device, hub, compute)
+
+        with self._asr_lock:
+            current_asr = self._asr
+            current_ready = (
+                self._asr_ready
+                and current_asr is not None
+                and current_asr.status == "ready"
+            )
+            if current_ready and self._asr_signature == signature:
+                return
+            if not current_ready:
+                self._asr_ready = False
+
+        log.info(f"Switching ASR worker: {self._asr_type} -> {engine_type}")
+        # Reset interim state for the engine boundary. The active worker is
+        # stopped before the target worker starts loading.
+        self._interim_active = False
+        self._interim_pending = ""
+        self._last_interim_samples = 0
+        self._last_interim_check_time = 0.0
+        self._interim_committed_tail = ""
+        self._vad.flush()
+        self._vad._reset()
+
         cached = is_asr_cached(engine_type, cache_model_key, hub)
         display_name = ASR_DISPLAY_NAMES.get(engine_type, engine_type)
         if engine_type == "whisper":
@@ -427,6 +499,46 @@ class LiveTranslateApp:
             self._panel if self._panel and self._panel.isVisible() else self._overlay
         )
 
+        worker_config = {
+            "engine_type": engine_type,
+            "funasr_model": funasr_model,
+            "model_size": cache_model_key,
+            "device": device,
+            "compute_type": compute,
+            "hub": hub,
+            "language": settings.get(
+                "asr_language", self._config["asr"].get("language", "auto")
+            ),
+            "pad_seconds": (
+                settings.get(
+                    "sensevoice_pad_seconds",
+                    self._config["asr"].get("sensevoice_pad_seconds", 0.5),
+                )
+                if engine_type == "funasr"
+                else settings.get(
+                    "whisper_pad_seconds",
+                    self._config["asr"].get("whisper_pad_seconds", 0.5),
+                )
+                if engine_type == "whisper"
+                else None
+            ),
+            "download_root": str((MODELS_DIR / "huggingface" / "hub").resolve()),
+            "display_name": display_name,
+        }
+        target_state = {
+            "type": engine_type,
+            "signature": signature,
+            "device": device,
+            "funasr_model_key": funasr_model
+            if engine_type == "funasr"
+            else self._funasr_model_key,
+            "whisper_model_size": model_size
+            if engine_type == "whisper"
+            else self._whisper_model_size,
+            "config": worker_config,
+            "display_name": display_name,
+        }
+
         if not cached:
             missing = get_missing_models(engine_type, cache_model_key, hub)
             missing = [m for m in missing if m["type"] != "silero-vad"]
@@ -436,73 +548,60 @@ class LiveTranslateApp:
                 )
                 if dlg.exec() != QDialog.DialogCode.Accepted:
                     log.info(f"Download cancelled/failed: {engine_type}")
-                    # Restore readiness if old engine is still available
-                    if self._asr is not None:
-                        self._asr_ready = True
+                    with self._asr_lock:
+                        self._asr_ready = (
+                            self._asr is not None and self._asr.status == "ready"
+                        )
                     return
 
         with self._asr_lock:
-            old_engine = self._asr
+            old_asr = self._asr
+            old_config = dict(self._asr_config) if self._asr_config else None
+            old_state = {
+                "type": self._asr_type,
+                "signature": self._asr_signature,
+                "device": self._asr_device,
+                "funasr_model_key": self._funasr_model_key,
+                "whisper_model_size": self._whisper_model_size,
+                "config": old_config,
+                "display_name": (old_config or {}).get("display_name"),
+            }
             self._asr = None
+            self._asr_ready = False
+            self._asr_type = None
+            self._asr_signature = None
+            self._asr_config = None
+            self._asr_error_count = 0
 
         dlg = _ModelLoadDialog(
             t("loading_model").format(name=display_name), parent=parent
         )
 
         new_asr = [None]
+        restored_asr = [None]
         load_error = [None]
+        restore_error = [None]
 
         def _load():
-            nonlocal old_engine
+            if old_asr is not None:
+                log.info(f"Stopping old ASR worker before switch: pid={old_asr.pid}")
+                old_asr.shutdown()
+                self._release_memory_caches()
             try:
-                if old_engine is not None:
-                    log.info(
-                        f"Releasing old ASR engine: {old_engine.__class__.__name__}"
-                    )
-                    if hasattr(old_engine, "unload"):
-                        old_engine.unload()
-                    old_engine = None
-                    self._release_memory_caches()
-                dev = device
-                dev_index = 0
-                if dev.startswith("cuda:"):
-                    part = dev.split("(")[0].strip()  # "cuda:0"
-                    dev_index = int(part.split(":")[1])
-                    dev = "cuda"
-
-                if engine_type == "funasr":
-                    from asr_funasr import FunASREngine
-
-                    new_asr[0] = FunASREngine(
-                        model_key=funasr_model,
-                        device=device,
-                        hub=hub,
-                        pad_seconds=settings.get(
-                            "sensevoice_pad_seconds",
-                            self._config["asr"].get("sensevoice_pad_seconds", 0.5),
-                        ),
-                    )
-                elif engine_type == "anime-whisper":
-                    from asr_anime_whisper import AnimeWhisperEngine
-
-                    dev_str = dev if dev == "cpu" else f"cuda:{dev_index}"
-                    new_asr[0] = AnimeWhisperEngine(device=dev_str, hub=hub)
-                else:
-                    download_root = str((MODELS_DIR / "huggingface" / "hub").resolve())
-                    compute = self._config["asr"]["compute_type"]
-                    if dev == "cpu" and compute == "float16":
-                        compute = "int8"
-                    new_asr[0] = ASREngine(
-                        model_size=cache_model_key,
-                        device=dev,
-                        device_index=dev_index,
-                        compute_type=compute,
-                        language=self._config["asr"]["language"],
-                        download_root=download_root,
-                    )
+                new_asr[0] = self._load_asr_client(worker_config)
             except Exception as e:
                 load_error[0] = str(e)
-                log.error(f"Failed to load ASR engine: {e}", exc_info=True)
+                log.error(f"Failed to load ASR worker: {e}", exc_info=True)
+                if old_config:
+                    try:
+                        log.info("Restoring previous ASR worker after switch failure")
+                        restored_asr[0] = self._load_asr_client(old_config)
+                    except Exception as restore_exc:
+                        restore_error[0] = str(restore_exc)
+                        log.error(
+                            f"Failed to restore previous ASR worker: {restore_exc}",
+                            exc_info=True,
+                        )
 
         thread = threading.Thread(target=_load, daemon=True)
         thread.start()
@@ -521,27 +620,62 @@ class LiveTranslateApp:
         dlg.exec()
         poll_timer.stop()
 
-        if load_error[0]:
+        def _activate_asr(client, state):
+            with self._asr_lock:
+                self._asr = client
+                self._asr_type = state["type"]
+                self._asr_signature = state["signature"]
+                self._asr_device = state["device"]
+                self._asr_config = dict(state["config"]) if state["config"] else None
+                self._funasr_model_key = state["funasr_model_key"]
+                self._whisper_model_size = state["whisper_model_size"]
+                self._asr_ready = True
+                self._asr_error_count = 0
+
+        if new_asr[0] is not None:
+            _activate_asr(new_asr[0], target_state)
+            if self._overlay:
+                self._overlay.update_asr_device(f"{display_name} [{device}]")
+            log.info(f"ASR worker ready: {engine_type} on {device}")
+            return
+
+        if restored_asr[0] is not None:
+            _activate_asr(restored_asr[0], old_state)
+            restored_name = old_state.get("display_name") or old_state.get("type")
+            if self._overlay:
+                self._overlay.update_asr_device(
+                    f"{restored_name} [{old_state['device']}]"
+                )
             QMessageBox.warning(
                 parent,
                 t("error_title"),
-                t("error_load_asr").format(error=load_error[0]),
+                t("error_load_asr").format(
+                    error=(
+                        f"{load_error[0] or 'unknown error'}\n"
+                        f"{t('asr_restore_succeeded')}"
+                    )
+                ),
             )
-            # Old engine was already released; mark ASR as unavailable
-            self._asr_type = None
+            log.info(
+                f"Previous ASR worker restored: "
+                f"{old_state.get('type')} on {old_state.get('device')}"
+            )
             return
 
-        self._asr = new_asr[0]
-        self._asr_type = engine_type
-        if engine_type == "funasr":
-            self._funasr_model_key = funasr_model
-        if self._panel:
-            asr_lang = self._panel.get_settings().get("asr_language", "auto")
-            self._asr.set_language(asr_lang)
-        self._asr_ready = True
+        error = load_error[0] or "unknown error"
+        if restore_error[0]:
+            error = (
+                f"{error}\n"
+                f"{t('asr_restore_failed').format(error=restore_error[0])}"
+            )
+        QMessageBox.warning(
+            parent,
+            t("error_title"),
+            t("error_load_asr").format(error=error),
+        )
+
         if self._overlay:
-            self._overlay.update_asr_device(f"{display_name} [{device}]")
-        log.info(f"ASR engine ready: {engine_type} on {device}")
+            self._overlay.update_asr_device("ASR unavailable")
 
     def _mem_snapshot(self) -> dict:
         rss_mb = self._mem_proc.memory_info().rss / 1024 / 1024
@@ -592,12 +726,26 @@ class LiveTranslateApp:
         with self._asr_lock:
             if not self._asr_ready or self._asr is None:
                 return None, 0.0
+            client = self._asr
             try:
-                result = self._asr.transcribe(audio, **kwargs)
+                result = client.transcribe(audio, **kwargs)
+            except (ASRWorkerExited, ASRWorkerTimeout) as exc:
+                asr_ms = (time.perf_counter() - asr_start) * 1000
+                self._log_mem_after_asr(f"{kind}:error", audio_seconds, asr_ms)
+                self._mark_asr_unavailable(str(exc), client)
+                raise
+            except ASRWorkerError as exc:
+                asr_ms = (time.perf_counter() - asr_start) * 1000
+                self._log_mem_after_asr(f"{kind}:error", audio_seconds, asr_ms)
+                self._asr_error_count += 1
+                if not exc.recoverable or self._asr_error_count >= 3:
+                    self._mark_asr_unavailable(str(exc), client)
+                raise
             except Exception:
                 asr_ms = (time.perf_counter() - asr_start) * 1000
                 self._log_mem_after_asr(f"{kind}:error", audio_seconds, asr_ms)
                 raise
+            self._asr_error_count = 0
         asr_ms = (time.perf_counter() - asr_start) * 1000
         self._log_mem_after_asr(kind, audio_seconds, asr_ms)
         return result, asr_ms
@@ -794,6 +942,7 @@ class LiveTranslateApp:
             f"GPU(alloc/reserved)={snap['gpu_alloc']:.0f}/{snap['gpu_reserved']:.0f}MB "
             f"asr_calls={self._mem_asr_call_count} outputs={self._asr_count}"
         )
+        self._shutdown_asr_worker()
         log.info("Pipeline stopped")
 
     def pause(self):
@@ -1780,8 +1929,7 @@ def main():
     def _on_tray_asr_lang(code):
         from control_panel import _save_settings
 
-        if live_trans._asr:
-            live_trans._asr.set_language(code)
+        live_trans._set_asr_language(code)
         settings = panel.get_settings()
         settings["asr_language"] = code
         panel._current_settings["asr_language"] = code
@@ -1866,4 +2014,7 @@ def main():
 
 
 if __name__ == "__main__":
+    import multiprocessing as _multiprocessing
+
+    _multiprocessing.freeze_support()
     main()

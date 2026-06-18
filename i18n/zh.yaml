@@ -226,6 +226,8 @@ override_hint: "未勾选时使用服务端默认值或全局配置"
 loading_model: "正在加载 {name}...\n请稍候。"
 error_title: "错误"
 error_load_asr: "ASR 模型加载失败:\n{error}"
+asr_restore_succeeded: "已恢复上一个 ASR worker。"
+asr_restore_failed: "恢复上一个 ASR worker 也失败: {error}"
 
 # 日志窗口
 window_log: "LiveTranslate - 日志"
