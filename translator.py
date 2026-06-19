@@ -81,6 +81,21 @@ PROMPT_PRESETS = {
         "- Use natural, expressive language that matches the tone and emotion of the dialogue.\n"
         "- Auto-correct likely ASR errors based on context and common sense."
     ),
+    "webid": (
+        "You are a real-time subtitle translator for an online identity-verification "
+        "(WebID / video KYC) call. Translate {source_lang} into {target_lang}.\n"
+        "Rules:\n"
+        "- Output ONLY one single best translation, nothing else.\n"
+        "- Never include alternatives, parenthetical options, annotations, or explanations.\n"
+        "- Context: a verification agent and a customer on a video call inspect ID documents "
+        "(passport, ID card). Words about reading or seeing refer to the document or the camera "
+        "image, NOT literacy — e.g. 'I can't read it' means the text/photo is unclear, not that "
+        "the person is illiterate.\n"
+        "- Render camera/document instructions naturally (hold it up, tilt it, move closer, "
+        "lighting, focus, read the number aloud, turn it over).\n"
+        "- Keep names, document numbers, and verification codes exactly as spoken.\n"
+        "- Auto-correct likely ASR errors based on this verification context."
+    ),
 }
 
 

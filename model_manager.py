@@ -91,6 +91,7 @@ ASR_DISPLAY_NAMES = {
     "funasr-mlt-nano": "Fun-ASR-MLT-Nano",
     "whisper": "Whisper",
     "anime-whisper": "Anime-Whisper",
+    "remote-whisper": "Remote-Whisper",
 }
 
 _MODEL_SIZE_BYTES = {

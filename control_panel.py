@@ -16,6 +16,7 @@ from PyQt6.QtWidgets import (
     QGroupBox,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
     QListWidget,
     QListWidgetItem,
     QMessageBox,
@@ -173,6 +174,7 @@ class ControlPanel(QWidget):
                 "Fun-ASR-Nano (FunASR)",
                 "Fun-ASR-MLT-Nano (FunASR, 31 langs)",
                 "Anime-Whisper (ja, anime/galgame)",
+                "Remote Whisper (remote GPU server)",
             ]
         )
         engine_map_idx = {
@@ -181,6 +183,7 @@ class ControlPanel(QWidget):
             "funasr-nano": 2,
             "funasr-mlt-nano": 3,
             "anime-whisper": 4,
+            "remote-whisper": 5,
         }
         engine_idx = engine_map_idx.get(s.get("asr_engine"), 0)
         self._asr_engine.setCurrentIndex(engine_idx)
@@ -316,6 +319,19 @@ class ControlPanel(QWidget):
             self._on_engine_changed_whisper_vis
         )
         self._update_whisper_size_label()
+
+        # Remote ASR server URL — only visible when engine is Remote Whisper
+        self._remote_group = QGroupBox("Remote ASR Server")
+        remote_layout = QHBoxLayout(self._remote_group)
+        remote_layout.addWidget(QLabel("URL"))
+        self._remote_url_edit = QLineEdit(
+            s.get("remote_asr_url", "http://127.0.0.1:8765")
+        )
+        self._remote_url_edit.setPlaceholderText("http://127.0.0.1:8765")
+        self._remote_url_edit.editingFinished.connect(self._auto_save)
+        remote_layout.addWidget(self._remote_url_edit, 1)
+        layout.addWidget(self._remote_group)
+        self._remote_group.setVisible(engine_idx == 5)
 
         mode_group = QGroupBox(t("group_vad_mode"))
         mode_layout = QVBoxLayout(mode_group)
@@ -472,11 +488,12 @@ class ControlPanel(QWidget):
         self._prompt_preset.addItem(t("prompt_daily"), "daily")
         self._prompt_preset.addItem(t("prompt_esports"), "esports")
         self._prompt_preset.addItem(t("prompt_anime"), "anime")
+        self._prompt_preset.addItem(t("prompt_webid"), "webid")
         self._prompt_preset.addItem(t("prompt_custom"), "custom")
 
         current_prompt = s.get("system_prompt", DEFAULT_PROMPT)
-        preset_idx = 3  # default to custom
-        for i, key in enumerate(["daily", "esports", "anime"]):
+        preset_idx = 4  # default to custom
+        for i, key in enumerate(["daily", "esports", "anime", "webid"]):
             if current_prompt.strip() == PROMPT_PRESETS[key].strip():
                 preset_idx = i
                 break
@@ -1013,6 +1030,8 @@ class ControlPanel(QWidget):
 
     def _on_engine_changed_whisper_vis(self, index):
         self._whisper_group.setVisible(index == 0)
+        if hasattr(self, "_remote_group"):
+            self._remote_group.setVisible(index == 5)
         # Resize window to fit content after whisper group visibility change
         def _fit():
             self.adjustSize()
@@ -1262,8 +1281,8 @@ class ControlPanel(QWidget):
             # Update preset combo to reflect current state
             from translator import PROMPT_PRESETS
             self._prompt_preset.blockSignals(True)
-            matched = 3  # custom
-            for i, key in enumerate(["daily", "esports", "anime"]):
+            matched = 4  # custom
+            for i, key in enumerate(["daily", "esports", "anime", "webid"]):
                 if text.strip() == PROMPT_PRESETS[key].strip():
                     matched = i
                     break
@@ -1278,10 +1297,15 @@ class ControlPanel(QWidget):
             2: "funasr-nano",
             3: "funasr-mlt-nano",
             4: "anime-whisper",
+            5: "remote-whisper",
         }
         self._current_settings["asr_engine"] = engine_map[
             self._asr_engine.currentIndex()
         ]
+        if hasattr(self, "_remote_url_edit"):
+            url = self._remote_url_edit.text().strip()
+            if url:
+                self._current_settings["remote_asr_url"] = url
         self._current_settings["whisper_model_size"] = (
             self._whisper_size_combo.currentText()
         )

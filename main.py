@@ -438,6 +438,15 @@ class LiveTranslateApp:
 
                     dev_str = dev if dev == "cpu" else f"cuda:{dev_index}"
                     new_asr[0] = AnimeWhisperEngine(device=dev_str, hub=hub)
+                elif engine_type == "remote-whisper":
+                    from asr_remote import RemoteASREngine
+
+                    remote_url = "http://127.0.0.1:8765"
+                    if self._panel:
+                        remote_url = self._panel.get_settings().get(
+                            "remote_asr_url", remote_url
+                        )
+                    new_asr[0] = RemoteASREngine(server_url=remote_url)
                 else:
                     download_root = str((MODELS_DIR / "huggingface" / "hub").resolve())
                     compute = self._config["asr"]["compute_type"]
