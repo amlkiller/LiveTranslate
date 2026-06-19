@@ -22,6 +22,7 @@ Works with any system audio — videos, livestreams, voice chat. No player modif
 
 - **Real-time pipeline**: System audio → VAD → ASR → LLM translation → overlay
 - **Multiple ASR engines**: faster-whisper, SenseVoice, FunASR Nano, Anime-Whisper
+- **Remote ASR**: offload speech recognition to a GPU machine over HTTP — see [REMOTE_ASR.md](REMOTE_ASR.md)
 - **Any OpenAI-compatible API**: DeepSeek, Grok, Qwen, GPT, Ollama, vLLM, etc.
 - **Streaming translation display**: Real-time character-by-character translation output
 - **Per-model settings**: Streaming, structured output (JSON), context history, disable thinking
@@ -122,6 +123,7 @@ main.py                 Entry point & pipeline
 ├── asr_sensevoice.py   SenseVoice backend
 ├── asr_funasr_nano.py  FunASR Nano backend
 ├── asr_anime_whisper.py Anime-Whisper backend (ja anime/galgame)
+├── asr_remote.py        Remote Whisper client (→ asr_server.py, see REMOTE_ASR.md)
 ├── translator.py       OpenAI-compatible client (streaming, JSON schema, context)
 ├── model_manager.py    Model download & cache
 ├── subtitle_overlay.py PyQt6 overlay
