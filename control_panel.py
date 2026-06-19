@@ -1,6 +1,7 @@
 import logging
 import os
 import threading
+from pathlib import Path
 
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import QFont

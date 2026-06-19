@@ -24,6 +24,7 @@ The pipeline runs in a background thread: **Audio Capture (32ms chunks) -> VAD -
 ```
 main.py (LiveTranslateApp)
   |-- model_manager.py     Centralized model detection, download, cache utils
+  |-- pipeline_controller.py Audio capture + VAD + ASR queue controller, incremental ASR coordination
   |-- audio_capture.py     WASAPI loopback via pyaudiowpatch, auto-reconnects on device change
   |-- vad_processor.py     Silero VAD / energy-based / disabled modes, progressive silence + backtrack split
   |-- asr_client.py        Main-process ASR worker manager (spawn, Pipe IPC, timeouts)
@@ -46,12 +47,12 @@ main.py (LiveTranslateApp)
 ### Threading / Process Model
 
 - **Main thread**: Qt event loop (all UI)
-- **Capture thread**: `_capture_loop` in `LiveTranslateApp` reads audio and runs VAD
-- **ASR queue thread**: `_asr_loop` drains VAD segments and calls `ASRClient.transcribe()`
+- **Capture thread**: `_capture_loop` in `PipelineController` reads audio and runs VAD
+- **ASR queue thread**: `_asr_loop` in `PipelineController` drains VAD segments and calls ASR via `ASRService`
 - **ASR worker process**: `asr_worker.py` owns the concrete ASR backend/model and runs inference over `multiprocessing.Pipe`
 - **ASR loading**: `_switch_asr_engine()` stops the current worker, then starts the target worker in a background thread; if target loading fails, it restarts the previous worker from its saved config
 - Cross-thread UI updates use **Qt signals** (e.g., `add_message_signal`, `update_translation_signal`)
-- ASR readiness tracked by `_asr_ready` flag; pipeline drops segments while no ready worker exists
+- ASR readiness tracked by `ASRService`; `PipelineController` drops segments while no ready worker exists
 
 ### Configuration
 
@@ -175,7 +176,7 @@ Continuous speech is processed incrementally to reduce latency (enabled by `incr
 - Whisper (ctranslate2) only accepts `device="cuda"` not `"cuda:0"`; device index passed via `device_index` param. Parsed from combo text like `"cuda:0 (RTX 4090)"` in `_switch_asr_engine`
 - ASR text density filter: segments ≥2s producing ≤3 alnum characters are discarded as noise
 - Settings file uses atomic write (write to `.tmp` then `os.replace`) to prevent corruption on crash
-- `stop()` joins pipeline thread before flushing VAD to prevent concurrent `_process_segment` calls
+- `PipelineController.stop()` joins capture/ASR queue threads before flushing VAD to prevent concurrent segment processing
 - Cancelled ASR download leaves the current worker running; failed target worker load attempts to restore the previous worker config
 - `Translator._build_system_prompt` catches format errors in user prompt templates, falls back to DEFAULT_PROMPT
 - Translation prompt presets: `PROMPT_PRESETS` in `translator.py` (daily/esports/anime), selectable via control panel combo
