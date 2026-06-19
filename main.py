@@ -17,8 +17,8 @@ from pathlib import Path
 from datetime import datetime
 
 from model_manager import (
+    CRISPASR_MODEL_PROFILES,
     DEFAULT_FUNASR_MODEL,
-    DEFAULT_CRISPASR_MODEL,
     apply_cache_env,
     crispasr_profile,
     funasr_display_name,
@@ -31,7 +31,6 @@ from model_manager import (
     local_crispasr_display_name,
     local_faster_whisper_display_name,
     migrate_funasr_settings,
-    normalize_crispasr_model_key,
     normalize_asr_engine_selection,
     normalize_funasr_model_key,
     resolve_custom_crispasr_model,
@@ -188,9 +187,7 @@ class LiveTranslateApp:
         self._funasr_model_key = normalize_funasr_model_key(
             config["asr"].get("funasr_model", DEFAULT_FUNASR_MODEL)
         )
-        self._crispasr_model_key = normalize_crispasr_model_key(
-            config["asr"].get("crispasr_model", DEFAULT_CRISPASR_MODEL)
-        )
+        self._crispasr_model_key = str(config["asr"].get("crispasr_model", "") or "")
         self._asr_lock = threading.RLock()
         self._vad_lock = threading.Lock()
         self._target_language = config["translation"]["target_language"]
@@ -463,6 +460,7 @@ class LiveTranslateApp:
             "crispasr_model",
             self._config["asr"].get("crispasr_model", self._crispasr_model_key),
         )
+        crispasr_model = str(crispasr_model or "")
         crispasr_model_path_value = None
         crispasr_backend = settings.get(
             "crispasr_backend", self._config["asr"].get("crispasr_backend", "auto")
@@ -495,16 +493,38 @@ class LiveTranslateApp:
         elif engine_type == "funasr":
             cache_model_key = funasr_model
         elif engine_type == "crispasr":
+            if not crispasr_model:
+                log.warning("CrispASR model is not selected; keeping current ASR worker")
+                with self._asr_lock:
+                    if not (
+                        self._asr_ready
+                        and self._asr is not None
+                        and self._asr.status == "ready"
+                    ):
+                        self._asr_ready = False
+                return
             custom_crispasr_path = resolve_custom_crispasr_model(crispasr_model)
             if custom_crispasr_path:
                 cache_model_key = custom_crispasr_path
                 crispasr_model_path_value = custom_crispasr_path
-            else:
-                crispasr_model = normalize_crispasr_model_key(crispasr_model)
+            elif crispasr_model in CRISPASR_MODEL_PROFILES:
                 cache_model_key = crispasr_model
                 crispasr_model_path_value = get_local_model_path(
                     "crispasr", hub=hub, funasr_model=crispasr_model
                 )
+            else:
+                log.warning(
+                    "CrispASR model is invalid or unavailable: %s; keeping current ASR worker",
+                    crispasr_model,
+                )
+                with self._asr_lock:
+                    if not (
+                        self._asr_ready
+                        and self._asr is not None
+                        and self._asr.status == "ready"
+                    ):
+                        self._asr_ready = False
+                return
 
         compute = self._config["asr"]["compute_type"]
         if engine_type == "whisper":
@@ -1645,7 +1665,7 @@ def main():
         elif current_engine == "crispasr":
             startup_model_key = saved.get(
                 "crispasr_model",
-                config["asr"].get("crispasr_model", DEFAULT_CRISPASR_MODEL),
+                config["asr"].get("crispasr_model", ""),
             )
         else:
             startup_model_key = saved.get("whisper_model_size", config["asr"]["model_size"])

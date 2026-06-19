@@ -15,8 +15,8 @@ asr:
   model_size: "medium"
   # FunASR model: sensevoice-small, funasr-nano-2512, funasr-mlt-nano-2512
   funasr_model: "sensevoice-small"
-  # CrispASR GGUF model key or local .gguf/.bin path
-  crispasr_model: "parakeet-tdt-0.6b-v3-q4_k"
+  # CrispASR GGUF model key or local .gguf/.bin path. Empty means user has not selected a model yet.
+  crispasr_model: ""
   crispasr_backend: "auto"
   crispasr_gpu_backend: "auto"
   crispasr_device_index: 0

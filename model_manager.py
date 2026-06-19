@@ -283,7 +283,7 @@ def _custom_crispasr_path(value) -> Path | None:
 def resolve_custom_crispasr_model(value) -> str | None:
     path = _custom_crispasr_path(value)
     if path and is_crispasr_model_file(path):
-        return str(path.resolve())
+        return str(path.absolute())
     return None
 
 
@@ -455,25 +455,24 @@ def list_local_crispasr_models() -> list[dict]:
     for path in files:
         if _is_builtin_crispasr_cache(path):
             continue
-        if _is_hf_hub_cache(path):
-            continue
         if path.name == "model.bin" and is_faster_whisper_model_dir(path.parent):
             continue
         if not is_crispasr_model_file(path):
             continue
         try:
-            resolved = str(path.resolve())
+            identity = str(path.resolve())
+            model_path = str(path.absolute())
         except OSError:
             continue
-        if resolved in seen:
+        if identity in seen:
             continue
-        seen.add(resolved)
+        seen.add(identity)
 
         name = path.name
         name_counts[name] = name_counts.get(name, 0) + 1
         if name_counts[name] > 1:
             name = f"{path.stem} ({path.parent.name}){path.suffix}"
-        entries.append({"name": name, "path": resolved})
+        entries.append({"name": name, "path": model_path})
 
     entries.sort(key=lambda item: item["name"].lower())
     return entries

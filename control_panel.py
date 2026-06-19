@@ -34,7 +34,6 @@ from dialogs import (
     ModelEditDialog,
 )
 from model_manager import (
-    DEFAULT_CRISPASR_MODEL,
     DEFAULT_FUNASR_MODEL,
     MODELS_DIR,
     _WHISPER_SIZES,
@@ -47,7 +46,6 @@ from model_manager import (
     list_local_crispasr_models,
     list_local_faster_whisper_models,
     migrate_funasr_settings,
-    normalize_crispasr_model_key,
     normalize_funasr_model_key,
     resolve_custom_crispasr_model,
     resolve_custom_whisper_model,
@@ -120,9 +118,7 @@ class ControlPanel(QWidget):
                 "funasr_model": config["asr"].get(
                     "funasr_model", DEFAULT_FUNASR_MODEL
                 ),
-                "crispasr_model": config["asr"].get(
-                    "crispasr_model", DEFAULT_CRISPASR_MODEL
-                ),
+                "crispasr_model": config["asr"].get("crispasr_model", ""),
                 "crispasr_backend": config["asr"].get("crispasr_backend", "auto"),
                 "crispasr_gpu_backend": config["asr"].get(
                     "crispasr_gpu_backend", "auto"
@@ -184,11 +180,8 @@ class ControlPanel(QWidget):
         )
         self._current_settings.setdefault(
             "crispasr_model",
-            config["asr"].get("crispasr_model", DEFAULT_CRISPASR_MODEL),
+            config["asr"].get("crispasr_model", ""),
         )
-        crispasr_setting = self._current_settings.get("crispasr_model")
-        if not crispasr_setting:
-            self._current_settings["crispasr_model"] = DEFAULT_CRISPASR_MODEL
         self._current_settings.setdefault(
             "crispasr_backend", config["asr"].get("crispasr_backend", "auto")
         )
@@ -318,16 +311,6 @@ class ControlPanel(QWidget):
         asr_layout.addWidget(self._funasr_model_label, 3, 0)
         asr_layout.addWidget(self._funasr_model_combo, 3, 1)
 
-        self._crispasr_model_label = QLabel(t("label_crispasr_model"))
-        self._crispasr_model_combo = QComboBox()
-        saved_crispasr_model = s.get("crispasr_model", DEFAULT_CRISPASR_MODEL)
-        self._populate_crispasr_models(saved_crispasr_model)
-        self._crispasr_model_combo.currentIndexChanged.connect(
-            self._on_crispasr_setting_changed
-        )
-        asr_layout.addWidget(self._crispasr_model_label, 4, 0)
-        asr_layout.addWidget(self._crispasr_model_combo, 4, 1)
-
         self._crispasr_gpu_label = QLabel(t("label_crispasr_gpu_backend"))
         self._crispasr_gpu_backend = QComboBox()
         self._crispasr_gpu_backend.addItems(["Auto", "CUDA", "Vulkan", "CPU"])
@@ -335,20 +318,20 @@ class ControlPanel(QWidget):
         gpu_idx = {"auto": 0, "cuda": 1, "vulkan": 2, "cpu": 3}.get(gpu_backend, 0)
         self._crispasr_gpu_backend.setCurrentIndex(gpu_idx)
         self._crispasr_gpu_backend.currentIndexChanged.connect(
-            self._on_crispasr_setting_changed
+            self._on_crispasr_runtime_setting_changed
         )
-        asr_layout.addWidget(self._crispasr_gpu_label, 5, 0)
-        asr_layout.addWidget(self._crispasr_gpu_backend, 5, 1)
+        asr_layout.addWidget(self._crispasr_gpu_label, 4, 0)
+        asr_layout.addWidget(self._crispasr_gpu_backend, 4, 1)
 
         self._crispasr_device_label = QLabel(t("label_crispasr_device_index"))
         self._crispasr_device_index = QSpinBox()
         self._crispasr_device_index.setRange(0, 16)
         self._crispasr_device_index.setValue(int(s.get("crispasr_device_index", 0) or 0))
         self._crispasr_device_index.valueChanged.connect(
-            self._on_crispasr_setting_changed
+            self._on_crispasr_runtime_setting_changed
         )
-        asr_layout.addWidget(self._crispasr_device_label, 6, 0)
-        asr_layout.addWidget(self._crispasr_device_index, 6, 1)
+        asr_layout.addWidget(self._crispasr_device_label, 5, 0)
+        asr_layout.addWidget(self._crispasr_device_index, 5, 1)
 
         self._crispasr_punc_label = QLabel(t("label_crispasr_punc_model"))
         self._crispasr_punc_model = QComboBox()
@@ -366,19 +349,19 @@ class ControlPanel(QWidget):
         if punc_idx >= 0:
             self._crispasr_punc_model.setCurrentIndex(punc_idx)
         self._crispasr_punc_model.currentIndexChanged.connect(
-            self._on_crispasr_setting_changed
+            self._on_crispasr_runtime_setting_changed
         )
-        asr_layout.addWidget(self._crispasr_punc_label, 7, 0)
-        asr_layout.addWidget(self._crispasr_punc_model, 7, 1)
+        asr_layout.addWidget(self._crispasr_punc_label, 6, 0)
+        asr_layout.addWidget(self._crispasr_punc_model, 6, 1)
 
         self._crispasr_unified_memory = QCheckBox(t("label_crispasr_unified_memory"))
         self._crispasr_unified_memory.setChecked(
             bool(s.get("crispasr_unified_memory", True))
         )
         self._crispasr_unified_memory.toggled.connect(
-            self._on_crispasr_setting_changed
+            self._on_crispasr_runtime_setting_changed
         )
-        asr_layout.addWidget(self._crispasr_unified_memory, 8, 1)
+        asr_layout.addWidget(self._crispasr_unified_memory, 7, 1)
 
         self._whisper_pad_label = QLabel(t("label_whisper_padding"))
         self._whisper_pad_seconds = QDoubleSpinBox()
@@ -393,8 +376,8 @@ class ControlPanel(QWidget):
         self._whisper_pad_seconds.setSuffix(" s")
         self._whisper_pad_seconds.setSpecialValueText(t("whisper_padding_off"))
         self._whisper_pad_seconds.setToolTip(t("whisper_padding_tooltip"))
-        asr_layout.addWidget(self._whisper_pad_label, 9, 0)
-        asr_layout.addWidget(self._whisper_pad_seconds, 9, 1)
+        asr_layout.addWidget(self._whisper_pad_label, 8, 0)
+        asr_layout.addWidget(self._whisper_pad_seconds, 8, 1)
         self._whisper_pad_seconds.valueChanged.connect(self._auto_save)
 
         self._sensevoice_pad_label = QLabel(t("label_sensevoice_padding"))
@@ -410,8 +393,8 @@ class ControlPanel(QWidget):
         self._sensevoice_pad_seconds.setSuffix(" s")
         self._sensevoice_pad_seconds.setSpecialValueText(t("sensevoice_padding_off"))
         self._sensevoice_pad_seconds.setToolTip(t("sensevoice_padding_tooltip"))
-        asr_layout.addWidget(self._sensevoice_pad_label, 10, 0)
-        asr_layout.addWidget(self._sensevoice_pad_seconds, 10, 1)
+        asr_layout.addWidget(self._sensevoice_pad_label, 9, 0)
+        asr_layout.addWidget(self._sensevoice_pad_seconds, 9, 1)
         self._sensevoice_pad_seconds.valueChanged.connect(self._auto_save)
 
         self._audio_device = QComboBox()
@@ -433,8 +416,8 @@ class ControlPanel(QWidget):
                 self._audio_device.setCurrentIndex(idx)
         else:
             self._audio_device.setCurrentIndex(1)  # system default
-        asr_layout.addWidget(QLabel(t("label_audio")), 11, 0)
-        asr_layout.addWidget(self._audio_device, 11, 1)
+        asr_layout.addWidget(QLabel(t("label_audio")), 10, 0)
+        asr_layout.addWidget(self._audio_device, 10, 1)
         self._audio_device.currentIndexChanged.connect(self._auto_save)
 
         self._mic_device = QComboBox()
@@ -455,16 +438,16 @@ class ControlPanel(QWidget):
                 idx = self._mic_device.findText(saved_mic)
                 if idx >= 0:
                     self._mic_device.setCurrentIndex(idx)
-        asr_layout.addWidget(QLabel(t("label_mic")), 12, 0)
-        asr_layout.addWidget(self._mic_device, 12, 1)
+        asr_layout.addWidget(QLabel(t("label_mic")), 11, 0)
+        asr_layout.addWidget(self._mic_device, 11, 1)
         self._mic_device.currentIndexChanged.connect(self._auto_save)
 
         self._hub_combo = QComboBox()
         self._hub_combo.addItems([t("hub_modelscope"), t("hub_huggingface")])
         saved_hub = s.get("hub", "ms")
         self._hub_combo.setCurrentIndex(0 if saved_hub == "ms" else 1)
-        asr_layout.addWidget(QLabel(t("label_hub")), 13, 0)
-        asr_layout.addWidget(self._hub_combo, 13, 1)
+        asr_layout.addWidget(QLabel(t("label_hub")), 12, 0)
+        asr_layout.addWidget(self._hub_combo, 12, 1)
         self._hub_combo.currentIndexChanged.connect(self._auto_save)
 
         self._ui_lang_combo = QComboBox()
@@ -473,8 +456,8 @@ class ControlPanel(QWidget):
 
         saved_lang = s.get("ui_lang", get_lang())
         self._ui_lang_combo.setCurrentIndex(0 if saved_lang == "en" else 1)
-        asr_layout.addWidget(QLabel(t("label_ui_lang")), 14, 0)
-        asr_layout.addWidget(self._ui_lang_combo, 14, 1)
+        asr_layout.addWidget(QLabel(t("label_ui_lang")), 13, 0)
+        asr_layout.addWidget(self._ui_lang_combo, 13, 1)
         self._ui_lang_combo.currentIndexChanged.connect(self._on_ui_lang_changed)
 
         layout.addWidget(asr_group)
@@ -502,6 +485,13 @@ class ControlPanel(QWidget):
 
         self._crispasr_group = QGroupBox(t("group_download_crispasr"))
         crispasr_layout = QHBoxLayout(self._crispasr_group)
+        self._crispasr_model_combo = QComboBox()
+        saved_crispasr_model = s.get("crispasr_model", "")
+        self._populate_crispasr_models(saved_crispasr_model)
+        self._crispasr_model_combo.currentIndexChanged.connect(
+            self._on_crispasr_model_changed
+        )
+        crispasr_layout.addWidget(self._crispasr_model_combo)
         self._crispasr_status = QLabel("")
         self._crispasr_status.setStyleSheet("color: #888; font-size: 11px;")
         crispasr_layout.addWidget(self._crispasr_status, 1)
@@ -1222,9 +1212,7 @@ class ControlPanel(QWidget):
         if hasattr(self, "_funasr_model_combo"):
             self._funasr_model_label.setVisible(is_funasr)
             self._funasr_model_combo.setVisible(is_funasr)
-        if hasattr(self, "_crispasr_model_combo"):
-            self._crispasr_model_label.setVisible(is_crispasr)
-            self._crispasr_model_combo.setVisible(is_crispasr)
+        if hasattr(self, "_crispasr_gpu_backend"):
             self._crispasr_gpu_label.setVisible(is_crispasr)
             self._crispasr_gpu_backend.setVisible(is_crispasr)
             self._crispasr_device_label.setVisible(is_crispasr)
@@ -1260,12 +1248,7 @@ class ControlPanel(QWidget):
 
     def _selected_crispasr_model(self) -> str:
         value = self._crispasr_model_combo.currentData()
-        value = str(value) if value else ""
-        if value in dict(crispasr_model_options()):
-            return normalize_crispasr_model_key(value)
-        if value:
-            return value
-        return DEFAULT_CRISPASR_MODEL
+        return str(value) if value is not None else ""
 
     def _selected_crispasr_gpu_backend(self) -> str:
         return ["auto", "cuda", "vulkan", "cpu"][self._crispasr_gpu_backend.currentIndex()]
@@ -1274,8 +1257,12 @@ class ControlPanel(QWidget):
         value = self._crispasr_punc_model.currentData()
         return str(value) if value else "auto"
 
-    def _on_crispasr_setting_changed(self):
+    def _on_crispasr_model_changed(self):
         self._current_settings["crispasr_model"] = self._selected_crispasr_model()
+        self._update_crispasr_status()
+        self._auto_save()
+
+    def _on_crispasr_runtime_setting_changed(self):
         self._current_settings["crispasr_gpu_backend"] = (
             self._selected_crispasr_gpu_backend()
         )
@@ -1288,7 +1275,6 @@ class ControlPanel(QWidget):
         self._current_settings["crispasr_unified_memory"] = (
             self._crispasr_unified_memory.isChecked()
         )
-        self._update_crispasr_status()
         self._auto_save()
 
     def _selected_whisper_model(self) -> str:
@@ -1298,6 +1284,7 @@ class ControlPanel(QWidget):
     def _populate_crispasr_models(self, saved_value: str):
         self._crispasr_model_combo.clear()
         builtin_models = dict(crispasr_model_options())
+        self._crispasr_model_combo.addItem(t("crispasr_model_placeholder"), "")
         for key, display_name in crispasr_model_options():
             self._crispasr_model_combo.addItem(display_name, key)
 
@@ -1311,7 +1298,9 @@ class ControlPanel(QWidget):
                 idx, item["path"], Qt.ItemDataRole.ToolTipRole
             )
 
-        if saved_value in builtin_models:
+        if not saved_value:
+            selected = ""
+        elif saved_value in builtin_models:
             selected = saved_value
         else:
             selected = resolve_custom_crispasr_model(saved_value) or saved_value
@@ -1418,6 +1407,11 @@ class ControlPanel(QWidget):
         from model_manager import is_asr_cached, crispasr_profile
 
         model_key = self._selected_crispasr_model()
+        if not model_key:
+            self._crispasr_status.setText(t("crispasr_select_model"))
+            self._crispasr_status.setStyleSheet("color: #888; font-size: 11px;")
+            self._crispasr_dl_btn.setEnabled(False)
+            return
         hub = self._current_settings.get("hub", "ms")
         cached = is_asr_cached("crispasr", model_key, hub)
         if model_key not in dict(crispasr_model_options()):
@@ -1443,6 +1437,8 @@ class ControlPanel(QWidget):
         from model_manager import is_asr_cached, get_missing_models
 
         model_key = self._selected_crispasr_model()
+        if not model_key:
+            return
         hub = self._current_settings.get("hub", "ms")
         if is_asr_cached("crispasr", model_key, hub):
             return
