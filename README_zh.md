@@ -21,7 +21,7 @@ Windows 实时音频翻译工具。捕获系统音频（WASAPI loopback）和可
 ## 功能特性
 
 - **实时翻译管线**：系统音频 → VAD → ASR → LLM 翻译 → 字幕显示
-- **多 ASR 引擎**：faster-whisper、SenseVoice、FunASR Nano、Anime-Whisper
+- **多 ASR 引擎**：faster-whisper、SenseVoice、FunASR Nano、Anime-Whisper、CrispASR
 - **兼容任意 OpenAI 格式 API**：DeepSeek、Grok、Qwen、GPT、Ollama、vLLM 等
 - **流式翻译显示**：翻译结果逐字实时显示
 - **模型独立配置**：流式传输、结构化输出(JSON)、上下文历史、禁用思考
@@ -70,23 +70,23 @@ cd LiveTranslate
 <summary>手动安装</summary>
 
 ```bash
-python -m venv .venv
+uv venv --python 3.12 .venv
 .venv\Scripts\activate
 
 # PyTorch（三选一）
-pip install torch torchaudio --index-url https://download.pytorch.org/whl/cu126  # CUDA
-pip install torch torchaudio --index-url https://download.pytorch.org/whl/cu128  # CUDA（RTX 50 系列）
-pip install torch torchaudio --index-url https://download.pytorch.org/whl/cpu    # 仅 CPU
+uv pip install torch torchaudio --index-url https://download.pytorch.org/whl/cu126  # CUDA
+uv pip install torch torchaudio --index-url https://download.pytorch.org/whl/cu128  # CUDA（RTX 50 系列）
+uv pip install torch torchaudio --index-url https://download.pytorch.org/whl/cpu    # 仅 CPU
 
 # 依赖
-pip install -r requirements.txt
-pip install funasr --no-deps
+uv sync --locked --inexact --no-install-package torch --no-install-package torchaudio
+uv pip install funasr --no-deps
 
 # 启动
 .venv\Scripts\python.exe main.py
 ```
 
-> FunASR 使用 `--no-deps` 安装，因为 `editdistance` 需要 C++ 编译器。`requirements.txt` 中已包含纯 Python 替代品 `editdistance-s`。
+> FunASR 使用 `--no-deps` 安装，因为 `editdistance` 需要 C++ 编译器。`pyproject.toml` 中已包含纯 Python 替代品 `editdistance-s`。
 
 </details>
 
@@ -123,6 +123,7 @@ main.py                 主入口，管线编排
 ├── asr_sensevoice.py   SenseVoice 后端
 ├── asr_funasr_nano.py  FunASR Nano 后端
 ├── asr_anime_whisper.py Anime-Whisper 后端 (日语动画/Galgame)
+├── asr_crispasr.py     CrispASR ggml runtime 后端
 ├── translator.py       OpenAI 兼容翻译客户端 (流式/JSON/上下文)
 ├── model_manager.py    模型下载与缓存管理
 ├── subtitle_overlay.py PyQt6 透明悬浮窗
@@ -136,6 +137,7 @@ main.py                 主入口，管线编排
 - [faster-whisper](https://github.com/SYSTRAN/faster-whisper) — 基于 CTranslate2 的 Whisper 推理
 - [FunASR](https://github.com/modelscope/FunASR) — SenseVoice / Fun-ASR-Nano
 - [Anime-Whisper](https://huggingface.co/litagin/anime-whisper) — 日语动画/Galgame 专用 ASR
+- CrispASR — ggml C++ ASR runtime hub，使用 GGUF/bin 单文件模型，LiveTranslate 通过 ASR worker 内的 Python binding 调用
 - [Silero VAD](https://github.com/snakers4/silero-vad) — 语音活动检测
 
 ## Star History

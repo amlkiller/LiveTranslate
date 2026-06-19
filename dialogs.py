@@ -406,6 +406,14 @@ class ModelDownloadDialog(QDialog):
                         hub=self._hub,
                         proxy=self._proxy,
                     )
+                elif m["type"].startswith("crispasr:"):
+                    model_key = m["type"].split(":", 1)[1]
+                    download_asr(
+                        "crispasr",
+                        model_size=model_key,
+                        hub=self._hub,
+                        proxy=self._proxy,
+                    )
                 elif m["type"].startswith("whisper-"):
                     size = m["type"].replace("whisper-", "")
                     download_asr(

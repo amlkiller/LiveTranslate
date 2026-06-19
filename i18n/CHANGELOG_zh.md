@@ -1,5 +1,11 @@
 # 更新日志
 
+## 2026-06-19
+- 修复 CrispASR 启动时报 `No module named 'crispasr'`: `pyproject.toml` 新增 CrispASR Python binding 依赖, 固定到 GitHub Releases `v0.7.2`
+- 安装脚本新增 CrispASR 原生运行时安装: 从 Releases 下载预编译 `libcrispasr` Windows DLL, 放入已安装的 `crispasr` 包目录
+- NVIDIA 环境优先安装 CUDA 版 CrispASR runtime, 下载或安装失败时自动回退 CPU runtime
+- Portable 首次启动 bootstrap 同步安装 CrispASR binding 与原生 DLL, 避免发布包缺少 `crispasr.dll`
+
 ## 2026-05-10
 - 新增「导出到文件」: 支持原文 / 译文 / 原文+译文 三种格式, 悬浮窗右键菜单与托盘菜单均可触发
 - 新增「转录持久化」(默认开启): 每次会话自动在 `transcripts/` 下创建 3 份文件 (原文 / 译文 / 全部), 每段识别结果实时追加写入, 不再受悬浮窗 50 条上限丢失早期文本

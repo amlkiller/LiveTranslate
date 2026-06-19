@@ -21,7 +21,7 @@ Works with any system audio — videos, livestreams, voice chat. No player modif
 ## Features
 
 - **Real-time pipeline**: System audio → VAD → ASR → LLM translation → overlay
-- **Multiple ASR engines**: faster-whisper, SenseVoice, FunASR Nano, Anime-Whisper
+- **Multiple ASR engines**: faster-whisper, SenseVoice, FunASR Nano, Anime-Whisper, CrispASR
 - **Any OpenAI-compatible API**: DeepSeek, Grok, Qwen, GPT, Ollama, vLLM, etc.
 - **Streaming translation display**: Real-time character-by-character translation output
 - **Per-model settings**: Streaming, structured output (JSON), context history, disable thinking
@@ -70,23 +70,23 @@ To update, double-click **`update.bat`** — it will pull the latest code and up
 <summary>Manual install</summary>
 
 ```bash
-python -m venv .venv
+uv venv --python 3.12 .venv
 .venv\Scripts\activate
 
 # PyTorch (choose one)
-pip install torch torchaudio --index-url https://download.pytorch.org/whl/cu126  # CUDA
-pip install torch torchaudio --index-url https://download.pytorch.org/whl/cu128  # CUDA (RTX 50xx)
-pip install torch torchaudio --index-url https://download.pytorch.org/whl/cpu    # CPU only
+uv pip install torch torchaudio --index-url https://download.pytorch.org/whl/cu126  # CUDA
+uv pip install torch torchaudio --index-url https://download.pytorch.org/whl/cu128  # CUDA (RTX 50xx)
+uv pip install torch torchaudio --index-url https://download.pytorch.org/whl/cpu    # CPU only
 
 # Dependencies
-pip install -r requirements.txt
-pip install funasr --no-deps
+uv sync --locked --inexact --no-install-package torch --no-install-package torchaudio
+uv pip install funasr --no-deps
 
 # Launch
 .venv\Scripts\python.exe main.py
 ```
 
-> FunASR uses `--no-deps` because `editdistance` requires a C++ compiler. `editdistance-s` in `requirements.txt` is a pure-Python drop-in replacement.
+> FunASR uses `--no-deps` because `editdistance` requires a C++ compiler. `editdistance-s` in `pyproject.toml` is a pure-Python drop-in replacement.
 
 </details>
 
@@ -123,6 +123,7 @@ main.py                 Entry point & pipeline
 ├── asr_sensevoice.py   SenseVoice backend
 ├── asr_funasr_nano.py  FunASR Nano backend
 ├── asr_anime_whisper.py Anime-Whisper backend (ja anime/galgame)
+├── asr_crispasr.py     CrispASR ggml runtime backend
 ├── translator.py       OpenAI-compatible client (streaming, JSON schema, context)
 ├── model_manager.py    Model download & cache
 ├── subtitle_overlay.py PyQt6 overlay
@@ -136,6 +137,7 @@ main.py                 Entry point & pipeline
 - [faster-whisper](https://github.com/SYSTRAN/faster-whisper) — Whisper inference via CTranslate2
 - [FunASR](https://github.com/modelscope/FunASR) — SenseVoice / Fun-ASR-Nano
 - [Anime-Whisper](https://huggingface.co/litagin/anime-whisper) — Japanese anime/galgame ASR
+- CrispASR — ggml C++ ASR runtime hub with GGUF/bin single-file models, used through its Python binding in the ASR worker
 - [Silero VAD](https://github.com/snakers4/silero-vad) — Voice activity detection
 
 ## Star History

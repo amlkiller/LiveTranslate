@@ -18,17 +18,23 @@ from datetime import datetime
 
 from model_manager import (
     DEFAULT_FUNASR_MODEL,
+    DEFAULT_CRISPASR_MODEL,
     apply_cache_env,
+    crispasr_profile,
     funasr_display_name,
     funasr_supports_padding,
     get_missing_models,
+    get_local_model_path,
     is_asr_cached,
     ASR_DISPLAY_NAMES,
     MODELS_DIR,
+    local_crispasr_display_name,
     local_faster_whisper_display_name,
     migrate_funasr_settings,
+    normalize_crispasr_model_key,
     normalize_asr_engine_selection,
     normalize_funasr_model_key,
+    resolve_custom_crispasr_model,
     resolve_custom_whisper_model,
 )
 
@@ -182,6 +188,9 @@ class LiveTranslateApp:
         self._funasr_model_key = normalize_funasr_model_key(
             config["asr"].get("funasr_model", DEFAULT_FUNASR_MODEL)
         )
+        self._crispasr_model_key = normalize_crispasr_model_key(
+            config["asr"].get("crispasr_model", DEFAULT_CRISPASR_MODEL)
+        )
         self._asr_lock = threading.RLock()
         self._vad_lock = threading.Lock()
         self._target_language = config["translation"]["target_language"]
@@ -273,6 +282,12 @@ class LiveTranslateApp:
                 "asr_device",
                 "whisper_model_size",
                 "funasr_model",
+                "crispasr_model",
+                "crispasr_backend",
+                "crispasr_gpu_backend",
+                "crispasr_device_index",
+                "crispasr_punc_model",
+                "crispasr_unified_memory",
                 "hub",
             )
         ):
@@ -444,21 +459,73 @@ class LiveTranslateApp:
             model_size = settings.get("whisper_model_size", model_size)
         model_path = None
         cache_model_key = model_size
+        crispasr_model = settings.get(
+            "crispasr_model",
+            self._config["asr"].get("crispasr_model", self._crispasr_model_key),
+        )
+        crispasr_model_path_value = None
+        crispasr_backend = settings.get(
+            "crispasr_backend", self._config["asr"].get("crispasr_backend", "auto")
+        )
+        crispasr_gpu_backend = settings.get(
+            "crispasr_gpu_backend",
+            self._config["asr"].get("crispasr_gpu_backend", "auto"),
+        )
+        crispasr_device_index = int(
+            settings.get(
+                "crispasr_device_index",
+                self._config["asr"].get("crispasr_device_index", 0),
+            )
+            or 0
+        )
+        crispasr_punc_model = settings.get(
+            "crispasr_punc_model",
+            self._config["asr"].get("crispasr_punc_model", "auto"),
+        )
+        crispasr_unified_memory = bool(
+            settings.get(
+                "crispasr_unified_memory",
+                self._config["asr"].get("crispasr_unified_memory", True),
+            )
+        )
         if engine_type == "whisper":
             model_path = resolve_custom_whisper_model(model_size)
             if model_path:
                 cache_model_key = model_path
         elif engine_type == "funasr":
             cache_model_key = funasr_model
+        elif engine_type == "crispasr":
+            custom_crispasr_path = resolve_custom_crispasr_model(crispasr_model)
+            if custom_crispasr_path:
+                cache_model_key = custom_crispasr_path
+                crispasr_model_path_value = custom_crispasr_path
+            else:
+                crispasr_model = normalize_crispasr_model_key(crispasr_model)
+                cache_model_key = crispasr_model
+                crispasr_model_path_value = get_local_model_path(
+                    "crispasr", hub=hub, funasr_model=crispasr_model
+                )
 
         compute = self._config["asr"]["compute_type"]
         if engine_type == "whisper":
             signature_model = cache_model_key
         elif engine_type == "funasr":
             signature_model = funasr_model
+        elif engine_type == "crispasr":
+            signature_model = (
+                cache_model_key,
+                crispasr_backend,
+                crispasr_gpu_backend,
+                crispasr_device_index,
+                crispasr_punc_model,
+                crispasr_unified_memory,
+            )
         else:
             signature_model = engine_type
-        signature = (engine_type, signature_model, device, hub, compute)
+        language = settings.get(
+            "asr_language", self._config["asr"].get("language", "auto")
+        )
+        signature = (engine_type, signature_model, device, hub, compute, language)
 
         with self._asr_lock:
             current_asr = self._asr
@@ -494,6 +561,27 @@ class LiveTranslateApp:
             display_name = f"Whisper {display_model}"
         elif engine_type == "funasr":
             display_name = funasr_display_name(funasr_model)
+        elif engine_type == "crispasr":
+            custom_crispasr_path = resolve_custom_crispasr_model(crispasr_model)
+            if custom_crispasr_path:
+                display_model = (
+                    local_crispasr_display_name(crispasr_model)
+                    or Path(crispasr_model).name
+                )
+                display_name = f"CrispASR {display_model}"
+            else:
+                display_name = f"CrispASR {crispasr_profile(crispasr_model)['display_name']}"
+
+            profile = (
+                {}
+                if custom_crispasr_path
+                else crispasr_profile(crispasr_model)
+            )
+            if (
+                profile.get("needs_punctuation")
+                and crispasr_punc_model in (None, "", "auto")
+            ):
+                crispasr_punc_model = "auto"
 
         parent = (
             self._panel if self._panel and self._panel.isVisible() else self._overlay
@@ -506,9 +594,7 @@ class LiveTranslateApp:
             "device": device,
             "compute_type": compute,
             "hub": hub,
-            "language": settings.get(
-                "asr_language", self._config["asr"].get("language", "auto")
-            ),
+            "language": language,
             "pad_seconds": (
                 settings.get(
                     "sensevoice_pad_seconds",
@@ -525,6 +611,18 @@ class LiveTranslateApp:
             "download_root": str((MODELS_DIR / "huggingface" / "hub").resolve()),
             "display_name": display_name,
         }
+        if engine_type == "crispasr":
+            worker_config.update(
+                {
+                    "crispasr_model": crispasr_model,
+                    "crispasr_model_path": crispasr_model_path_value,
+                    "crispasr_backend": crispasr_backend,
+                    "crispasr_gpu_backend": crispasr_gpu_backend,
+                    "crispasr_device_index": crispasr_device_index,
+                    "crispasr_punc_model": crispasr_punc_model,
+                    "crispasr_unified_memory": crispasr_unified_memory,
+                }
+            )
         target_state = {
             "type": engine_type,
             "signature": signature,
@@ -535,6 +633,9 @@ class LiveTranslateApp:
             "whisper_model_size": model_size
             if engine_type == "whisper"
             else self._whisper_model_size,
+            "crispasr_model_key": crispasr_model
+            if engine_type == "crispasr"
+            else self._crispasr_model_key,
             "config": worker_config,
             "display_name": display_name,
         }
@@ -553,6 +654,21 @@ class LiveTranslateApp:
                             self._asr is not None and self._asr.status == "ready"
                         )
                     return
+                if engine_type == "crispasr":
+                    crispasr_model_path_value = get_local_model_path(
+                        "crispasr", hub=hub, funasr_model=cache_model_key
+                    )
+                    if not crispasr_model_path_value:
+                        QMessageBox.warning(
+                            parent,
+                            t("error_title"),
+                            t("error_load_asr").format(
+                                error="CrispASR model file was not found after download"
+                            ),
+                        )
+                        return
+                    worker_config["crispasr_model_path"] = crispasr_model_path_value
+                    target_state["config"] = worker_config
 
         with self._asr_lock:
             old_asr = self._asr
@@ -563,6 +679,7 @@ class LiveTranslateApp:
                 "device": self._asr_device,
                 "funasr_model_key": self._funasr_model_key,
                 "whisper_model_size": self._whisper_model_size,
+                "crispasr_model_key": self._crispasr_model_key,
                 "config": old_config,
                 "display_name": (old_config or {}).get("display_name"),
             }
@@ -629,6 +746,7 @@ class LiveTranslateApp:
                 self._asr_config = dict(state["config"]) if state["config"] else None
                 self._funasr_model_key = state["funasr_model_key"]
                 self._whisper_model_size = state["whisper_model_size"]
+                self._crispasr_model_key = state["crispasr_model_key"]
                 self._asr_ready = True
                 self._asr_error_count = 0
 
@@ -1519,13 +1637,21 @@ def main():
     else:
         saved = saved or {}
         current_engine = saved.get("asr_engine", config["asr"].get("asr_engine", "funasr"))
+        current_engine, current_funasr_model = normalize_asr_engine_selection(
+            current_engine, saved.get("funasr_model", config["asr"].get("funasr_model"))
+        )
+        if current_engine == "funasr":
+            startup_model_key = current_funasr_model
+        elif current_engine == "crispasr":
+            startup_model_key = saved.get(
+                "crispasr_model",
+                config["asr"].get("crispasr_model", DEFAULT_CRISPASR_MODEL),
+            )
+        else:
+            startup_model_key = saved.get("whisper_model_size", config["asr"]["model_size"])
         missing = get_missing_models(
             current_engine,
-            (
-                saved.get("funasr_model", config["asr"].get("funasr_model"))
-                if current_engine == "funasr"
-                else saved.get("whisper_model_size", config["asr"]["model_size"])
-            ),
+            startup_model_key,
             saved.get("hub", "ms"),
         )
         if missing:

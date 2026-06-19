@@ -78,6 +78,30 @@ def _load_engine(config: dict):
 
         worker_device = parsed_device if parsed_device == "cpu" else f"cuda:{device_index}"
         engine = AnimeWhisperEngine(device=worker_device, hub=hub)
+    elif engine_type == "crispasr":
+        from asr_crispasr import CrispASREngine
+
+        gpu_backend = config.get("crispasr_gpu_backend", "auto")
+        if parsed_device == "cpu":
+            gpu_backend = "cpu"
+        elif gpu_backend == "auto" and parsed_device.startswith("cuda"):
+            gpu_backend = "cuda"
+        device_index = int(config.get("crispasr_device_index", device_index))
+        os_env_device = str(device_index)
+        import os
+
+        os.environ["CRISPASR_ARG_DEVICE"] = os_env_device
+        if config.get("crispasr_unified_memory", True):
+            os.environ["GGML_CUDA_ENABLE_UNIFIED_MEMORY"] = "1"
+        engine = CrispASREngine(
+            model_path=config["crispasr_model_path"],
+            backend=config.get("crispasr_backend", "auto"),
+            gpu_backend=gpu_backend,
+            device_index=device_index,
+            language=language,
+            punc_model=config.get("crispasr_punc_model", "auto"),
+            unified_memory=config.get("crispasr_unified_memory", True),
+        )
     else:
         from asr_engine import ASREngine
 

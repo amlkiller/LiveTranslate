@@ -9,12 +9,19 @@ audio:
   chunk_duration: 0.032
 
 asr:
-  # ASR engine: whisper, funasr, anime-whisper
+  # ASR engine: whisper, funasr, anime-whisper, crispasr
   asr_engine: "funasr"
   # Model size: tiny, base, small, medium, large-v3
   model_size: "medium"
   # FunASR model: sensevoice-small, funasr-nano-2512, funasr-mlt-nano-2512
   funasr_model: "sensevoice-small"
+  # CrispASR GGUF model key or local .gguf/.bin path
+  crispasr_model: "parakeet-tdt-0.6b-v3-q4_k"
+  crispasr_backend: "auto"
+  crispasr_gpu_backend: "auto"
+  crispasr_device_index: 0
+  crispasr_punc_model: "auto"
+  crispasr_unified_memory: true
   # Device: cuda or cpu
   device: "cuda"
   # Compute type: float16, int8_float16, int8

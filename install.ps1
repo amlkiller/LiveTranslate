@@ -10,6 +10,63 @@ function Write-Ok   { param($msg) Write-Host "  OK: $msg" -ForegroundColor Green
 function Write-Warn { param($msg) Write-Host "  WARN: $msg" -ForegroundColor Yellow }
 function Write-Err  { param($msg) Write-Host "  ERROR: $msg" -ForegroundColor Red }
 
+$CrispAsrVersion = "v0.7.2"
+$Uv = "uv"
+
+function Install-CrispAsrNativeRuntime {
+    param(
+        [string]$PythonExe,
+        [bool]$UseCuda
+    )
+
+    Write-Step "Installing CrispASR native runtime..."
+    try {
+        $target = & $PythonExe -c "import crispasr, pathlib; print(pathlib.Path(crispasr.__file__).resolve().parent)"
+        if ($LASTEXITCODE -ne 0 -or -not $target) {
+            throw "Could not locate the installed crispasr package"
+        }
+        $target = $target.Trim()
+        if (-not (Test-Path $target)) {
+            throw "Python package 'crispasr' is not installed"
+        }
+
+        $variant = if ($UseCuda) { "cuda" } else { "cpu" }
+        $asset = if ($UseCuda) {
+            "libcrispasr-windows-x86_64-cuda.tar.gz"
+        } else {
+            "libcrispasr-windows-x86_64.tar.gz"
+        }
+        $url = "https://github.com/CrispStrobe/CrispASR/releases/download/$CrispAsrVersion/$asset"
+        $tmpDir = Join-Path $env:TEMP "livetranslate-crispasr-$variant"
+        $archive = Join-Path $tmpDir $asset
+        if (Test-Path $tmpDir) { Remove-Item -Recurse -Force $tmpDir }
+        New-Item -ItemType Directory -Force -Path $tmpDir | Out-Null
+
+        Write-Host "  Downloading $asset" -ForegroundColor Gray
+        Invoke-WebRequest -Uri $url -OutFile $archive
+        & tar -xzf $archive -C $tmpDir
+        if ($LASTEXITCODE -ne 0) { throw "Failed to extract $asset" }
+
+        $root = Get-ChildItem -Path $tmpDir -Directory | Select-Object -First 1
+        if (-not $root) { throw "Extracted CrispASR runtime directory not found" }
+        $bin = Join-Path $root.FullName "bin"
+        if (-not (Test-Path (Join-Path $bin "crispasr.dll"))) {
+            throw "crispasr.dll not found in $asset"
+        }
+
+        Copy-Item -Path (Join-Path $bin "*.dll") -Destination $target -Force
+        Write-Ok "CrispASR native runtime installed ($variant)"
+    } catch {
+        if ($UseCuda) {
+            Write-Warn "CUDA CrispASR runtime failed: $($_.Exception.Message)"
+            Install-CrispAsrNativeRuntime -PythonExe $PythonExe -UseCuda $false
+        } else {
+            Write-Warn "CrispASR native runtime installation failed: $($_.Exception.Message)"
+            Write-Warn "CrispASR will not run until libcrispasr/crispasr.dll is installed"
+        }
+    }
+}
+
 function Enable-SystemProxy {
     # uv (Python download) and pip honor *_PROXY env vars but not the Windows
     # registry system proxy; bridge it here. An already-set env proxy wins.
@@ -51,6 +108,52 @@ Write-Host "========================================" -ForegroundColor Magenta
 
 Enable-SystemProxy
 
+# ── Step 0: Find uv ──
+Write-Step "Detecting uv..."
+try {
+    $uvVersion = & $Uv --version 2>&1
+    if ($LASTEXITCODE -ne 0) { throw $uvVersion }
+    Write-Ok $uvVersion
+} catch {
+    Write-Warn "uv not found"
+    $hasWinget = $false
+    try {
+        $null = & winget --version 2>&1
+        if ($LASTEXITCODE -eq 0) { $hasWinget = $true }
+    } catch {}
+
+    if ($hasWinget) {
+        Write-Host ""
+        Write-Host "  uv can be installed automatically via winget." -ForegroundColor White
+        $answer = Read-Host "  Install uv now? [Y/n]"
+        if ($answer -eq "" -or $answer -match "^[Yy]") {
+            Write-Step "Installing uv via winget..."
+            & winget install Astral.UV --accept-package-agreements --accept-source-agreements
+            if ($LASTEXITCODE -ne 0) {
+                Write-Err "winget install failed"
+                Read-Host "Press Enter to exit"
+                exit 1
+            }
+            $env:Path = [System.Environment]::GetEnvironmentVariable("Path", "Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path", "User")
+            $uvVersion = & $Uv --version 2>&1
+            if ($LASTEXITCODE -ne 0) {
+                Write-Err "uv installed but not found in PATH. Please close this window, reopen, and run install.bat again."
+                Read-Host "Press Enter to exit"
+                exit 1
+            }
+            Write-Ok $uvVersion
+        } else {
+            Write-Err "uv is required. Install it from https://docs.astral.sh/uv/getting-started/installation/ and run install.bat again."
+            Read-Host "Press Enter to exit"
+            exit 1
+        }
+    } else {
+        Write-Err "uv is required and winget is not available. Install uv from https://docs.astral.sh/uv/getting-started/installation/"
+        Read-Host "Press Enter to exit"
+        exit 1
+    }
+}
+
 # ── Step 1: Find Python ──
 Write-Step "Detecting Python..."
 
@@ -63,6 +166,19 @@ function Find-Python {
                 $exe = $exe.Trim()
                 $ver = & $exe --version 2>&1
                 Write-Ok "Found $ver ($exe)"
+                return $exe
+            }
+        } catch {}
+    }
+    # uv-managed Python is project-local and should count as available when it
+    # has already been downloaded. Do not download during detection.
+    foreach ($v in @("3.12", "3.11", "3.10")) {
+        try {
+            $exe = & $Uv python find $v --managed-python --no-python-downloads 2>&1
+            if ($LASTEXITCODE -eq 0 -and $exe -and (Test-Path $exe.Trim())) {
+                $exe = $exe.Trim()
+                $ver = & $exe --version 2>&1
+                Write-Ok "Found uv-managed $ver ($exe)"
                 return $exe
             }
         } catch {}
@@ -162,7 +278,7 @@ if (Test-Path ".venv") {
     } else {
         Write-Warn "Existing venv is broken or incomplete, recreating..."
         Remove-Item -Recurse -Force .venv -ErrorAction SilentlyContinue
-        & $PythonCmd -m venv .venv
+        & $Uv venv --python $PythonCmd .venv
         if ($LASTEXITCODE -ne 0) {
             Write-Err "Failed to create venv"
             Read-Host "Press Enter to exit"
@@ -171,7 +287,7 @@ if (Test-Path ".venv") {
         Write-Ok "Created .venv"
     }
 } else {
-    & $PythonCmd -m venv .venv
+    & $Uv venv --python $PythonCmd .venv
     if ($LASTEXITCODE -ne 0) {
         Write-Err "Failed to create venv"
         Read-Host "Press Enter to exit"
@@ -180,17 +296,7 @@ if (Test-Path ".venv") {
     Write-Ok "Created .venv"
 }
 
-$Pip = ".venv\Scripts\pip.exe"
 $Python = ".venv\Scripts\python.exe"
-
-# Upgrade pip first
-Write-Step "Upgrading pip..."
-& $Python -m pip install --upgrade pip --quiet
-if ($LASTEXITCODE -ne 0) {
-    Write-Warn "pip upgrade failed (non-critical, continuing with current pip)"
-} else {
-    Write-Ok "pip upgraded"
-}
 
 # ── Step 3: Detect GPU ──
 Write-Step "Detecting GPU..."
@@ -242,9 +348,9 @@ Write-Step "Installing PyTorch (this may take a few minutes)..."
 
 if ($HasNvidia) {
     Write-Host "  Using index: $CudaVer" -ForegroundColor Gray
-    & $Pip install torch torchaudio --index-url https://download.pytorch.org/whl/$CudaVer
+    & $Uv pip install --python $Python torch torchaudio --index-url https://download.pytorch.org/whl/$CudaVer
 } else {
-    & $Pip install torch torchaudio --index-url https://download.pytorch.org/whl/cpu
+    & $Uv pip install --python $Python torch torchaudio --index-url https://download.pytorch.org/whl/cpu
 }
 
 if ($LASTEXITCODE -ne 0) {
@@ -255,34 +361,34 @@ if ($LASTEXITCODE -ne 0) {
 Write-Ok "PyTorch installed"
 
 # ── Step 5: Install dependencies ──
-Write-Step "Installing dependencies from requirements.txt..."
+Write-Step "Syncing dependencies with uv..."
 
-& $Pip install -r requirements.txt
+& $Uv sync --python $Python --locked --inexact --no-install-package torch --no-install-package torchaudio
 if ($LASTEXITCODE -ne 0) {
-    Write-Err "Failed to install dependencies"
+    Write-Err "Failed to sync dependencies"
     Read-Host "Press Enter to exit"
     exit 1
 }
-Write-Ok "Dependencies installed"
+Write-Ok "Dependencies synced"
 
-# ── Step 6: Install FunASR (no-deps) ──
+# uv sync intentionally skips torch/torchaudio because the correct wheel index
+# depends on GPU support. Clean up stale torch metadata if a previous sync/install
+# left duplicate dist-info directories behind.
+if (Test-Path ".\repair_torch_metadata.ps1") {
+    & powershell -NoProfile -ExecutionPolicy Bypass -File ".\repair_torch_metadata.ps1" -PythonExe $Python
+}
+
+# ── Step 6: Install CrispASR native runtime ──
+Install-CrispAsrNativeRuntime -PythonExe $Python -UseCuda $HasNvidia
+
+# ── Step 7: Install FunASR (no-deps) ──
 Write-Step "Installing FunASR (--no-deps)..."
 
-& $Pip install funasr --no-deps
+& $Uv pip install --python $Python funasr --no-deps
 if ($LASTEXITCODE -ne 0) {
     Write-Warn "FunASR installation failed (non-critical, SenseVoice engine may not work)"
 } else {
     Write-Ok "FunASR installed"
-}
-
-# ── Step 7: Install pysbd for incremental ASR ──
-Write-Step "Installing pysbd..."
-
-& $Pip install pysbd
-if ($LASTEXITCODE -ne 0) {
-    Write-Warn "pysbd installation failed (incremental ASR may not work)"
-} else {
-    Write-Ok "pysbd installed"
 }
 
 # ── Done ──
