@@ -67,12 +67,8 @@ from PyQt6.QtCore import QTimer, Qt
 from subtitle_overlay import SubtitleOverlay
 from subtitle_window import SubtitleWindow
 from log_window import LogWindow
-from control_panel import (
-    ControlPanel,
-    SETTINGS_FILE,
-    _load_saved_settings,
-    _save_settings,
-)
+from control_panel import ControlPanel
+from settings_store import SETTINGS_FILE, load_settings, save_settings
 from dialogs import (
     SetupWizardDialog,
     ModelDownloadDialog,
@@ -295,11 +291,11 @@ class LiveTranslateApp:
                 )
             )
         if "audio_device" in settings:
-            old_device = self._audio._device_name
+            old_device = self._audio.device_name
             self._audio.set_device(settings["audio_device"])
             if old_device != settings.get("audio_device"):
                 self._vad.flush()
-                self._vad._reset()
+                self._vad.reset()
                 if self._overlay:
                     self._overlay.update_monitor(0.0, 0.0)
         if "mic_device" in settings:
@@ -397,11 +393,7 @@ class LiveTranslateApp:
         if self._translator:
             self._translator.set_target_language(lang)
         if self._panel:
-            settings = self._panel.get_settings()
-            settings["target_language"] = lang
-            from control_panel import _save_settings
-
-            _save_settings(settings)
+            self._panel.set_target_language(lang)
 
     def _on_model_changed(self, model_config: dict):
         log.info(
@@ -568,7 +560,7 @@ class LiveTranslateApp:
         self._last_interim_check_time = 0.0
         self._interim_committed_tail = ""
         self._vad.flush()
-        self._vad._reset()
+        self._vad.reset()
 
         cached = is_asr_cached(engine_type, cache_model_key, hub)
         display_name = ASR_DISPLAY_NAMES.get(engine_type, engine_type)
@@ -826,7 +818,7 @@ class LiveTranslateApp:
         except Exception:
             pass
         msgs = len(self._overlay._messages) if self._overlay else 0
-        vad_buf = len(self._vad._speech_buffer)
+        vad_buf = self._vad.buffer_stats()["chunks"]
         return {
             "rss": rss_mb,
             "gpu_alloc": gpu_alloc_mb,
@@ -1477,8 +1469,8 @@ class LiveTranslateApp:
         while self._running:
             item = self._audio.get_audio(timeout=1.0)
             if item is None:
-                if self._vad._is_speaking and not self._paused:
-                    n = self._vad._get_effective_silence_limit() + 1
+                if self._vad.is_speaking and not self._paused:
+                    n = self._vad.effective_silence_limit_chunks() + 1
                     for _ in range(n):
                         with self._vad_lock:
                             seg = self._vad.process_chunk(silence_chunk)
@@ -1503,8 +1495,8 @@ class LiveTranslateApp:
             if speech_segment is None:
                 # Still accumulating — check for interim ASR
                 if (self._incremental_enabled and self._asr_ready
-                        and self._vad._is_speaking):
-                    buf_samples = self._vad._speech_samples
+                        and self._vad.is_speaking):
+                    buf_samples = self._vad.speech_samples
                     total_dur = buf_samples / 16000
                     elapsed = (buf_samples - self._last_interim_samples) / 16000
                     now = time.perf_counter()
@@ -1560,7 +1552,7 @@ class LiveTranslateApp:
                 self._drain_interim_duplicates()
                 self._do_interim_asr()
                 with self._vad_lock:
-                    self._last_interim_samples = self._vad._speech_samples
+                    self._last_interim_samples = self._vad.speech_samples
 
     def _drain_interim_duplicates(self):
         while True:
@@ -1580,7 +1572,7 @@ def main():
     config.setdefault("asr", {})
     config["asr"].setdefault("asr_engine", "funasr")
     config["asr"].setdefault("funasr_model", DEFAULT_FUNASR_MODEL)
-    saved = _load_saved_settings()
+    saved = load_settings(config)
     migrate_funasr_settings(saved)
 
     # Log actual effective config
@@ -1624,7 +1616,7 @@ def main():
         wizard = SetupWizardDialog()
         if wizard.exec() != QDialog.DialogCode.Accepted:
             sys.exit(0)
-        saved = _load_saved_settings()
+        saved = load_settings(config)
         log.info("Setup wizard completed")
 
         # Prompt user to configure translation API
@@ -1640,7 +1632,7 @@ def main():
         dlg = ModelEditDialog(None, {
             "name": "hunyuan-mt-chimera-7b",
             "api_base": "http://127.0.0.1:1234/v1",
-            "api_key": "sk-lm-tHzDfNGm:dgxlip7eebn3HIMxivqN",
+            "api_key": "",
             "model": "hunyuan-mt-chimera-7b",
         })
         dlg.setWindowTitle(t("setup_api_title"))
@@ -1649,7 +1641,7 @@ def main():
             if data.get("api_key"):
                 saved["models"] = [data]
                 saved["active_model"] = 0
-                _save_settings(saved)
+                save_settings(saved)
                 log.info(f"Translation API configured: {data['name']}")
         # If user skips, ControlPanel will create default placeholder from config.yaml
 
@@ -1803,33 +1795,26 @@ def main():
 
     # --- Subtitle window toggle ---
     def _save_overlay_pos():
-        settings = panel.get_settings()
         pos = overlay.pos()
         size = overlay.size()
-        settings["overlay_x"] = pos.x()
-        settings["overlay_y"] = pos.y()
-        settings["overlay_w"] = size.width()
-        settings["overlay_h"] = size.height()
-        panel._current_settings.update({
-            "overlay_x": pos.x(), "overlay_y": pos.y(),
-            "overlay_w": size.width(), "overlay_h": size.height(),
+        panel.update_settings({
+            "overlay_x": pos.x(),
+            "overlay_y": pos.y(),
+            "overlay_w": size.width(),
+            "overlay_h": size.height(),
         })
-        _save_settings(settings)
 
     overlay.position_changed.connect(_save_overlay_pos)
 
     subwin_toggle_action = QAction(t("subwin_show"), checkable=True)
 
     def _save_subwin_state():
-        settings = panel.get_settings()
-        sm = settings.get("subtitle_mode") or {}
-        sm["enabled"] = subwin.isVisible()
         pos = subwin.pos()
-        sm["window_x"] = pos.x()
-        sm["window_y"] = pos.y()
-        settings["subtitle_mode"] = sm
-        panel._current_settings["subtitle_mode"] = sm
-        _save_settings(settings)
+        panel.update_subtitle_mode({
+            "enabled": subwin.isVisible(),
+            "window_x": pos.x(),
+            "window_y": pos.y(),
+        })
 
     _subwin_notified = [False]
 
@@ -1929,24 +1914,16 @@ def main():
     taskbar_action = QAction(t("taskbar"), checkable=True)
 
     # Tray → overlay sync
-    ct_action.toggled.connect(lambda v: overlay._handle._ct_check.setChecked(v))
-    topmost_action.toggled.connect(
-        lambda v: overlay._handle._topmost_check.setChecked(v)
-    )
-    autoscroll_action.toggled.connect(
-        lambda v: overlay._handle._auto_scroll.setChecked(v)
-    )
-    taskbar_action.toggled.connect(
-        lambda v: overlay._handle._taskbar_check.setChecked(v)
-    )
+    ct_action.toggled.connect(overlay.set_click_through_checked)
+    topmost_action.toggled.connect(overlay.set_topmost_checked)
+    autoscroll_action.toggled.connect(overlay.set_auto_scroll_checked)
+    taskbar_action.toggled.connect(overlay.set_taskbar_checked)
 
     # Overlay → tray sync
-    overlay._handle.click_through_toggled.connect(lambda v: ct_action.setChecked(v))
-    overlay._handle.topmost_toggled.connect(lambda v: topmost_action.setChecked(v))
-    overlay._handle.auto_scroll_toggled.connect(
-        lambda v: autoscroll_action.setChecked(v)
-    )
-    overlay._handle.taskbar_toggled.connect(lambda v: taskbar_action.setChecked(v))
+    overlay.click_through_toggled.connect(lambda v: ct_action.setChecked(v))
+    overlay.topmost_toggled.connect(lambda v: topmost_action.setChecked(v))
+    overlay.auto_scroll_toggled.connect(lambda v: autoscroll_action.setChecked(v))
+    overlay.taskbar_toggled.connect(lambda v: taskbar_action.setChecked(v))
 
     overlay_menu.addAction(ct_action)
     overlay_menu.addAction(topmost_action)
@@ -1978,27 +1955,12 @@ def main():
     def _on_tray_model_switch(index):
         models = panel.get_settings().get("models", [])
         if 0 <= index < len(models):
-            from control_panel import _save_settings
-
-            settings = panel.get_settings()
-            settings["active_model"] = index
-            panel._current_settings["active_model"] = index
-            _save_settings(settings)
-            panel._refresh_model_list()
-            live_trans._on_model_changed(models[index])
-            overlay.set_models(models, index)
+            panel.set_active_model(index)
 
     def on_overlay_model_switch(index):
         models = panel.get_settings().get("models", [])
         if 0 <= index < len(models):
-            from control_panel import _save_settings
-
-            settings = panel.get_settings()
-            settings["active_model"] = index
-            panel._current_settings["active_model"] = index
-            _save_settings(settings)
-            panel._refresh_model_list()
-            live_trans._on_model_changed(models[index])
+            panel.set_active_model(index)
         _rebuild_model_menu()
 
     model_menu.aboutToShow.connect(_rebuild_model_menu)
@@ -2032,12 +1994,6 @@ def main():
     def _on_tray_lang_switch(lang_code):
         overlay.set_target_language(lang_code)
         live_trans._on_target_language_changed(lang_code)
-        from control_panel import _save_settings
-
-        settings = panel.get_settings()
-        settings["target_language"] = lang_code
-        panel._current_settings["target_language"] = lang_code
-        _save_settings(settings)
 
     # Overlay → tray lang sync
     def _on_overlay_lang_changed(lang_code):
@@ -2073,19 +2029,11 @@ def main():
         _asr_lang_actions[current_asr_lang].setChecked(True)
 
     def _on_tray_asr_lang(code):
-        from control_panel import _save_settings
-
         live_trans._set_asr_language(code)
-        settings = panel.get_settings()
-        settings["asr_language"] = code
-        panel._current_settings["asr_language"] = code
-        _save_settings(settings)
-        # Sync control panel combo
-        idx = panel._asr_lang.findData(code)
-        if idx >= 0:
-            panel._asr_lang.blockSignals(True)
-            panel._asr_lang.setCurrentIndex(idx)
-            panel._asr_lang.blockSignals(False)
+        panel.set_asr_language(code)
+        overlay.set_source_language(code)
+        if code in _asr_lang_actions:
+            _asr_lang_actions[code].setChecked(True)
 
     menu.addMenu(asr_lang_menu)
     menu.addSeparator()
@@ -2121,15 +2069,16 @@ def main():
     def _on_overlay_source_lang(code):
         """Overlay source language combo → sync to panel + ASR engine + tray."""
         _on_tray_asr_lang(code)
-        overlay.set_source_language(code)
 
-    def _on_panel_asr_lang_changed(_index):
-        """Panel ASR language combo → sync to overlay."""
-        code = panel._asr_lang.currentData() or "auto"
+    def _on_panel_asr_lang_changed(code):
+        """Panel ASR language combo → sync to runtime, overlay, and tray."""
+        live_trans._set_asr_language(code)
         overlay.set_source_language(code)
+        if code in _asr_lang_actions:
+            _asr_lang_actions[code].setChecked(True)
 
     overlay.source_language_changed.connect(_on_overlay_source_lang)
-    panel._asr_lang.currentIndexChanged.connect(_on_panel_asr_lang_changed)
+    panel.asr_language_changed.connect(_on_panel_asr_lang_changed)
     overlay.model_switch_requested.connect(on_overlay_model_switch)
     overlay.start_requested.connect(on_resume)
     overlay.stop_requested.connect(on_pause)

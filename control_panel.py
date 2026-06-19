@@ -1,8 +1,6 @@
-import json
 import logging
 import os
 import threading
-from pathlib import Path
 
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import QFont
@@ -52,34 +50,21 @@ from model_manager import (
 )
 from i18n import t, LANGUAGES
 from subtitle_settings import SubtitleSettingsWidget
+from settings_store import (
+    SETTINGS_FILE,
+    load_settings,
+    normalize_settings,
+    save_settings,
+)
 
 log = logging.getLogger("LiveTranslate.Panel")
 
-SETTINGS_FILE = Path(__file__).parent / "user_settings.json"
-
-
 def _load_saved_settings() -> dict | None:
-    try:
-        if SETTINGS_FILE.exists():
-            data = json.loads(SETTINGS_FILE.read_text(encoding="utf-8"))
-            migrate_funasr_settings(data)
-            log.info(f"Loaded saved settings from {SETTINGS_FILE}")
-            return data
-    except Exception as e:
-        log.warning(f"Failed to load settings: {e}")
-    return None
+    return load_settings()
 
 
 def _save_settings(settings: dict):
-    try:
-        tmp = SETTINGS_FILE.with_suffix(".tmp")
-        tmp.write_text(
-            json.dumps(settings, indent=2, ensure_ascii=False), encoding="utf-8"
-        )
-        tmp.replace(SETTINGS_FILE)
-        log.info(f"Settings saved to {SETTINGS_FILE}")
-    except Exception as e:
-        log.warning(f"Failed to save settings: {e}")
+    save_settings(settings)
 
 
 class ControlPanel(QWidget):
@@ -89,6 +74,7 @@ class ControlPanel(QWidget):
     model_changed = pyqtSignal(dict)
     models_list_changed = pyqtSignal(list, int)
     subtitle_settings_changed = pyqtSignal(dict)
+    asr_language_changed = pyqtSignal(str)
     _bench_result = pyqtSignal(str)
     _cache_result = pyqtSignal(list)
     reset_positions = pyqtSignal()
@@ -101,106 +87,7 @@ class ControlPanel(QWidget):
         self.resize(520, 650)
 
         saved = migrate_funasr_settings(saved_settings) or _load_saved_settings()
-        if saved:
-            self._current_settings = saved
-        else:
-            tc = config["translation"]
-            self._current_settings = {
-                "vad_mode": "silero",
-                "vad_threshold": config["asr"]["vad_threshold"],
-                "energy_threshold": 0.02,
-                "min_speech_duration": config["asr"]["min_speech_duration"],
-                "max_speech_duration": config["asr"]["max_speech_duration"],
-                "silence_mode": "auto",
-                "silence_duration": 0.8,
-                "asr_language": config["asr"].get("language", "auto"),
-                "asr_engine": "funasr",
-                "funasr_model": config["asr"].get(
-                    "funasr_model", DEFAULT_FUNASR_MODEL
-                ),
-                "crispasr_model": config["asr"].get("crispasr_model", ""),
-                "crispasr_backend": config["asr"].get("crispasr_backend", "auto"),
-                "crispasr_gpu_backend": config["asr"].get(
-                    "crispasr_gpu_backend", "auto"
-                ),
-                "crispasr_device_index": config["asr"].get(
-                    "crispasr_device_index", 0
-                ),
-                "crispasr_punc_model": config["asr"].get(
-                    "crispasr_punc_model", "auto"
-                ),
-                "crispasr_unified_memory": config["asr"].get(
-                    "crispasr_unified_memory", True
-                ),
-                "asr_device": "cuda",
-                "sensevoice_pad_seconds": config["asr"].get(
-                    "sensevoice_pad_seconds", 0.5
-                ),
-                "whisper_pad_seconds": config["asr"].get(
-                    "whisper_pad_seconds", 0.5
-                ),
-                "models": [
-                    {
-                        "name": f"{tc['model']}",
-                        "api_base": tc["api_base"],
-                        "api_key": tc["api_key"],
-                        "model": tc["model"],
-                    }
-                ],
-                "active_model": 0,
-                "hub": "ms",
-            }
-
-        if "models" not in self._current_settings:
-            tc = config["translation"]
-            self._current_settings["models"] = [
-                {
-                    "name": f"{tc['model']}",
-                    "api_base": tc["api_base"],
-                    "api_key": tc["api_key"],
-                    "model": tc["model"],
-                }
-            ]
-            self._current_settings["active_model"] = 0
-
-        self._current_settings.setdefault(
-            "funasr_model",
-            config["asr"].get("funasr_model", DEFAULT_FUNASR_MODEL),
-        )
-        self._current_settings["funasr_model"] = normalize_funasr_model_key(
-            self._current_settings.get("funasr_model")
-        )
-        self._current_settings.setdefault(
-            "sensevoice_pad_seconds",
-            config["asr"].get("sensevoice_pad_seconds", 0.5),
-        )
-        self._current_settings.setdefault(
-            "whisper_pad_seconds",
-            config["asr"].get("whisper_pad_seconds", 0.5),
-        )
-        self._current_settings.setdefault(
-            "crispasr_model",
-            config["asr"].get("crispasr_model", ""),
-        )
-        self._current_settings.setdefault(
-            "crispasr_backend", config["asr"].get("crispasr_backend", "auto")
-        )
-        self._current_settings.setdefault(
-            "crispasr_gpu_backend",
-            config["asr"].get("crispasr_gpu_backend", "auto"),
-        )
-        self._current_settings.setdefault(
-            "crispasr_device_index",
-            config["asr"].get("crispasr_device_index", 0),
-        )
-        self._current_settings.setdefault(
-            "crispasr_punc_model",
-            config["asr"].get("crispasr_punc_model", "auto"),
-        )
-        self._current_settings.setdefault(
-            "crispasr_unified_memory",
-            config["asr"].get("crispasr_unified_memory", True),
-        )
+        self._current_settings = normalize_settings(config, saved)
 
         layout = QVBoxLayout(self)
         tabs = QTabWidget()
@@ -272,6 +159,9 @@ class ControlPanel(QWidget):
         asr_layout.addWidget(QLabel(t("label_language_hint")), 1, 0)
         asr_layout.addWidget(self._asr_lang, 1, 1)
         self._asr_lang.currentIndexChanged.connect(self._auto_save)
+        self._asr_lang.currentIndexChanged.connect(
+            lambda _idx: self.asr_language_changed.emit(self._get_asr_lang_code())
+        )
 
         self._asr_device = QComboBox()
         devices = ["cuda", "cpu"]
@@ -1472,6 +1362,59 @@ class ControlPanel(QWidget):
                 item.setFont(font)
             self._model_list.addItem(item)
 
+    def refresh_model_list(self):
+        self._refresh_model_list()
+
+    def current_settings(self) -> dict:
+        return dict(self._current_settings)
+
+    def set_active_model(self, index: int, save: bool = True, emit: bool = True) -> bool:
+        models = self._current_settings.get("models", [])
+        if not (0 <= index < len(models)):
+            return False
+        self._current_settings["active_model"] = index
+        self._refresh_model_list()
+        if save:
+            _save_settings(self._current_settings)
+        self._emit_models_list_changed()
+        if emit:
+            self.model_changed.emit(models[index])
+        return True
+
+    def set_target_language(self, code: str, save: bool = True):
+        self._current_settings["target_language"] = code
+        if save:
+            _save_settings(self._current_settings)
+
+    def set_asr_language(self, code: str, save: bool = True, emit: bool = False):
+        self._current_settings["asr_language"] = code
+        idx = self._asr_lang.findData(code)
+        if idx >= 0:
+            self._asr_lang.blockSignals(True)
+            self._asr_lang.setCurrentIndex(idx)
+            self._asr_lang.blockSignals(False)
+        if save:
+            _save_settings(self._current_settings)
+        if emit:
+            self.asr_language_changed.emit(code)
+
+    def current_asr_language(self) -> str:
+        return self._get_asr_lang_code()
+
+    def update_subtitle_mode(self, patch: dict, save: bool = True) -> dict:
+        mode = dict(self._current_settings.get("subtitle_mode") or {})
+        mode.update(patch)
+        self._current_settings["subtitle_mode"] = mode
+        if save:
+            _save_settings(self._current_settings)
+        return mode
+
+    def update_settings(self, patch: dict, save: bool = True) -> dict:
+        self._current_settings.update(patch)
+        if save:
+            _save_settings(self._current_settings)
+        return dict(self._current_settings)
+
     def _emit_models_list_changed(self):
         models = self._current_settings.get("models", [])
         active_idx = self._current_settings.get("active_model", 0)
@@ -1732,7 +1675,7 @@ class ControlPanel(QWidget):
         self.settings_changed.emit(dict(self._current_settings))
 
     def get_settings(self):
-        return dict(self._current_settings)
+        return self.current_settings()
 
     def get_active_model(self) -> dict | None:
         models = self._current_settings.get("models", [])

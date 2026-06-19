@@ -76,6 +76,28 @@ class VADProcessor:
         # Exposed for monitor
         self.last_confidence = 0.0
 
+    @property
+    def is_speaking(self) -> bool:
+        return self._is_speaking
+
+    @property
+    def speech_samples(self) -> int:
+        return self._speech_samples
+
+    def reset(self):
+        self._reset()
+
+    def effective_silence_limit_chunks(self) -> int:
+        return self._get_effective_silence_limit()
+
+    def buffer_stats(self) -> dict:
+        return {
+            "chunks": len(self._speech_buffer),
+            "samples": self._speech_samples,
+            "seconds": self._speech_samples / self.sample_rate,
+            "is_speaking": self._is_speaking,
+        }
+
     def _seconds_to_chunks(self, seconds: float) -> int:
         return max(1, round(seconds / self._chunk_duration))
 

@@ -107,6 +107,8 @@ uv pip install funasr --no-deps
 | Model | `deepseek-chat` |
 | 代理 | `none` / `system` / 自定义地址 |
 
+真实 API Key 会保存在已被 git 忽略的 `user_settings.json` 中，不要把真实凭据写入 `config.yaml`。
+
 ## 架构
 
 ```

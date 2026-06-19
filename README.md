@@ -107,6 +107,8 @@ Settings → Translation tab:
 | Model | `deepseek-chat` |
 | Proxy | `none` / `system` / custom URL |
 
+Real API keys are stored in `user_settings.json`, which is git-ignored. Keep `config.yaml` free of real credentials.
+
 ## Architecture
 
 ```
