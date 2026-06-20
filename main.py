@@ -75,7 +75,6 @@ from dialogs import (
 )
 from i18n import t, set_lang, LANGUAGES, COMMON_LANG_CODES
 
-# Sentinel for "no pending ASR setting"; distinct from any real language/padding value.
 _NO_PENDING = object()
 
 
@@ -190,9 +189,11 @@ class LiveTranslateApp:
         # Settings changed from the Qt thread are deferred here and applied by the
         # ASR thread before its next transcribe, so the UI never blocks on the
         # worker pipe (which may be busy with an in-flight cross-process call).
+        # Padding is keyed by engine_type because one settings save updates both
+        # the funasr and whisper padding and they must not clobber each other.
         self._asr_pending_lock = threading.Lock()
         self._asr_pending_language = _NO_PENDING
-        self._asr_pending_padding = _NO_PENDING
+        self._asr_pending_padding = {}
         # Auto-restart bookkeeping for a worker that dies mid-session. _asr_generation
         # is bumped on every (de)activation so a slow background (re)start can detect
         # that a newer engine switch superseded it and discard its stale worker.
@@ -372,47 +373,52 @@ class LiveTranslateApp:
             client.shutdown()
 
     def _set_asr_language(self, language: str):
-        # Defer to the ASR thread (see _apply_pending_asr_settings) so a settings
-        # change cannot block the Qt thread behind an in-flight worker transcribe.
         with self._asr_pending_lock:
             self._asr_pending_language = language
 
     def _set_asr_padding(self, engine_type: str, pad_seconds):
         with self._asr_pending_lock:
-            self._asr_pending_padding = (engine_type, pad_seconds)
+            self._asr_pending_padding[engine_type] = pad_seconds
 
-    def _apply_pending_asr_settings(self, client):
-        """Apply deferred language/padding changes on the ASR thread, right before a
-        transcribe. A pending value is only cleared once it has been delivered (or
-        proven inapplicable); worker-death exceptions propagate to the caller for
-        recovery with the pending value intact, so the restarted worker re-applies it."""
+    def _apply_pending_asr_settings(self, client, asr_type, funasr_key):
+        """Apply deferred language/padding on the ASR thread, just before a transcribe.
+        A pending value is cleared only once delivered; worker-death exceptions
+        propagate with the pending intact so the restarted worker re-applies it. The
+        applied value is written back into the restart config so an auto-restart or
+        recycle does not revert a runtime override to the engine-switch-time value."""
         with self._asr_pending_lock:
             language = self._asr_pending_language
-            padding = self._asr_pending_padding
+            pad_seconds = self._asr_pending_padding.get(asr_type, _NO_PENDING)
         if language is not _NO_PENDING:
             try:
                 client.set_language(language)
             except ASRWorkerError as exc:
                 log.warning(f"ASR language update failed: {exc}")
-            self._clear_pending(language, None)
-        if padding is not _NO_PENDING:
-            engine_type, pad_seconds = padding
-            if engine_type == self._asr_type and not (
-                engine_type == "funasr"
-                and not funasr_supports_padding(self._funasr_model_key)
-            ):
+            self._update_restart_config(language=language)
+            self._clear_pending_language(language)
+        if pad_seconds is not _NO_PENDING:
+            if not (asr_type == "funasr" and not funasr_supports_padding(funasr_key)):
                 try:
                     client.set_input_padding(pad_seconds)
                 except ASRWorkerError as exc:
                     log.warning(f"ASR padding update failed: {exc}")
-            self._clear_pending(None, padding)
+                self._update_restart_config(pad_seconds=pad_seconds)
+            self._clear_pending_padding(asr_type, pad_seconds)
 
-    def _clear_pending(self, language, padding):
+    def _clear_pending_language(self, language):
         with self._asr_pending_lock:
-            if language is not None and self._asr_pending_language is language:
+            if self._asr_pending_language is language:
                 self._asr_pending_language = _NO_PENDING
-            if padding is not None and self._asr_pending_padding is padding:
-                self._asr_pending_padding = _NO_PENDING
+
+    def _clear_pending_padding(self, asr_type, pad_seconds):
+        with self._asr_pending_lock:
+            if self._asr_pending_padding.get(asr_type) == pad_seconds:
+                del self._asr_pending_padding[asr_type]
+
+    def _update_restart_config(self, **kwargs):
+        with self._asr_lock:
+            if self._asr_restart_state and self._asr_restart_state.get("config"):
+                self._asr_restart_state["config"].update(kwargs)
 
     def _load_engine_client(self, config: dict):
         """Build the ASR backend for a worker config. Local engines run in an isolated
@@ -836,8 +842,10 @@ class LiveTranslateApp:
             if not self._asr_ready or self._asr is None:
                 return None, 0.0
             client = self._asr
+            asr_type = self._asr_type
+            funasr_key = self._funasr_model_key
         try:
-            self._apply_pending_asr_settings(client)
+            self._apply_pending_asr_settings(client, asr_type, funasr_key)
             result = client.transcribe(audio, **kwargs)
         except (ASRWorkerExited, ASRWorkerTimeout) as exc:
             asr_ms = (time.perf_counter() - asr_start) * 1000
@@ -878,7 +886,7 @@ class LiveTranslateApp:
             return False
         stale = None
         with self._asr_lock:
-            if self._asr_generation != expected_gen:
+            if self._asr_generation != expected_gen or not self._running:
                 stale = client
             else:
                 self._asr = client
@@ -937,6 +945,8 @@ class LiveTranslateApp:
                 dead_client.terminate()
             except Exception:
                 pass
+        if not self._running:
+            return  # shutting down; do not spawn a replacement worker
         if give_up:
             log.error(
                 f"ASR worker died and auto-restart gave up after "
@@ -963,6 +973,8 @@ class LiveTranslateApp:
         bound native-side leaks that accumulate in the long-lived worker process.
         Called from the ASR thread between segments so the reload gap costs no audio
         beyond what arrives during it."""
+        if not self._running:
+            return
         with self._asr_lock:
             client = self._asr
             if not self._asr_ready or client is None or self._asr_recycling:
@@ -1007,6 +1019,10 @@ class LiveTranslateApp:
             except Exception:
                 pass
         self._release_memory_caches()
+        if not self._running:
+            with self._asr_lock:
+                self._asr_recycling = False
+            return
         try:
             started = self._start_worker_from_state(state, gen)
         finally:
@@ -1671,9 +1687,13 @@ class LiveTranslateApp:
             try:
                 item = self._asr_queue.get(timeout=1.0)
             except queue.Empty:
-                # Idle moment: a good time to recycle a bloated worker (no audio
-                # waiting, so the reload gap costs nothing extra).
-                self._maybe_recycle_asr_worker()
+                # Idle moment: recycle a bloated worker while no audio is waiting.
+                # Guarded so an unexpected error can never kill this thread (which
+                # would itself silence ASR permanently).
+                try:
+                    self._maybe_recycle_asr_worker()
+                except Exception:
+                    log.error("ASR worker recycle check failed", exc_info=True)
                 continue
 
             if item is None:

@@ -53,7 +53,6 @@ class RemoteASREngine:
         self.unload()
 
     def set_input_padding(self, pad_seconds):
-        # The remote server controls its own input handling; nothing to do here.
         pass
 
     def set_language(self, language: str):
