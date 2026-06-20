@@ -346,14 +346,6 @@ class LiveTranslateApp:
                 log.info(f"Download cancelled/failed: {plan.engine_type}")
                 self._asr_service.mark_download_cancelled()
                 return
-            error = self._asr_service.complete_download(plan)
-            if error:
-                QMessageBox.warning(
-                    parent,
-                    t("error_title"),
-                    t("error_load_asr").format(error=error),
-                )
-                return
 
         dlg = _ModelLoadDialog(
             t("loading_model").format(name=plan.display_name), parent=parent

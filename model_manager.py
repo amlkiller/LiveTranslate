@@ -142,21 +142,6 @@ ASR_DISPLAY_NAMES = {
     "crispasr": "CrispASR",
 }
 
-CRISPASR_MODEL_PROFILES = {
-    "parakeet-tdt-0.6b-v3-q4_k": {
-        "display_name": "Parakeet TDT 0.6B v3 Q4_K",
-        "repo_id": "cstr/parakeet-tdt-0.6b-v3-GGUF",
-        "filename": "parakeet-tdt-0.6b-v3-q4_k.gguf",
-        "backend": "auto",
-        "estimated_bytes": 650_000_000,
-        "languages": "25 EU",
-        "output_style": "native_punctuation",
-        "needs_punctuation": False,
-        "sha256": None,
-    },
-}
-
-DEFAULT_CRISPASR_MODEL = "parakeet-tdt-0.6b-v3-q4_k"
 _CRISPASR_EXTS = {".gguf", ".bin"}
 _CRISPASR_MIN_BYTES = 1_000_000
 
@@ -171,7 +156,6 @@ _MODEL_SIZE_BYTES = {
     "whisper-medium": 1_530_000_000,
     "whisper-large-v3": 3_100_000_000,
     "anime-whisper": 3_100_000_000,
-    "crispasr:parakeet-tdt-0.6b-v3-q4_k": 650_000_000,
 }
 
 _WHISPER_SIZES = ["tiny", "base", "small", "medium", "large-v3"]
@@ -240,23 +224,6 @@ def funasr_model_id(model_key: str | None, hub: str = "ms") -> str:
     return profile["huggingface_id"] if hub == "hf" else profile["modelscope_id"]
 
 
-def normalize_crispasr_model_key(model_key: str | None) -> str:
-    if model_key in CRISPASR_MODEL_PROFILES:
-        return model_key
-    return DEFAULT_CRISPASR_MODEL
-
-
-def crispasr_profile(model_key: str | None) -> dict:
-    return CRISPASR_MODEL_PROFILES[normalize_crispasr_model_key(model_key)]
-
-
-def crispasr_model_options() -> list[tuple[str, str]]:
-    return [
-        (key, profile["display_name"])
-        for key, profile in CRISPASR_MODEL_PROFILES.items()
-    ]
-
-
 def is_crispasr_model_file(path) -> bool:
     if not path:
         return False
@@ -272,7 +239,7 @@ def is_crispasr_model_file(path) -> bool:
 
 
 def _custom_crispasr_path(value) -> Path | None:
-    if not value or value in CRISPASR_MODEL_PROFILES:
+    if not value:
         return None
     path = Path(str(value)).expanduser()
     if not path.is_absolute():
@@ -285,44 +252,6 @@ def resolve_custom_crispasr_model(value) -> str | None:
     if path and is_crispasr_model_file(path):
         return str(path.absolute())
     return None
-
-
-def _hf_repo_cache_dir(repo_id: str) -> Path:
-    org, name = repo_id.split("/", 1)
-    return MODELS_DIR / "huggingface" / "hub" / f"models--{org}--{name}"
-
-
-def _hf_cached_file(repo_id: str, filename: str) -> Path | None:
-    snap_root = _hf_repo_cache_dir(repo_id) / "snapshots"
-    if not snap_root.exists():
-        return None
-    try:
-        snapshots = sorted(
-            (p for p in snap_root.iterdir() if p.is_dir()),
-            key=lambda p: p.stat().st_mtime,
-            reverse=True,
-        )
-    except (OSError, PermissionError):
-        return None
-    for snap in snapshots:
-        path = snap / filename
-        if is_crispasr_model_file(path):
-            return path
-    return None
-
-
-def _crispasr_legacy_model_path(model_key: str | None) -> Path:
-    profile = crispasr_profile(model_key)
-    return MODELS_DIR / "crispasr" / profile["filename"]
-
-
-def crispasr_model_path(model_key: str | None, hub: str = "hf") -> str:
-    profile = crispasr_profile(model_key)
-    cached = _hf_cached_file(profile["repo_id"], profile["filename"])
-    if cached:
-        return str(cached.resolve())
-    legacy = _crispasr_legacy_model_path(model_key)
-    return str(legacy.resolve())
 
 
 def _custom_whisper_path(value) -> Path | None:
@@ -356,15 +285,6 @@ def resolve_custom_whisper_model(value) -> str | None:
 def _is_builtin_whisper_cache(path: Path) -> bool:
     parts = set(path.parts)
     return any(f"models--Systran--faster-whisper-{s}" in parts for s in _WHISPER_SIZES)
-
-
-def _is_builtin_crispasr_cache(path: Path) -> bool:
-    parts = set(path.parts)
-    for profile in CRISPASR_MODEL_PROFILES.values():
-        org, name = profile["repo_id"].split("/", 1)
-        if f"models--{org}--{name}" in parts:
-            return True
-    return False
 
 
 def _is_hf_hub_cache(path: Path) -> bool:
@@ -453,8 +373,6 @@ def list_local_crispasr_models() -> list[dict]:
         return []
 
     for path in files:
-        if _is_builtin_crispasr_cache(path):
-            continue
         if path.name == "model.bin" and is_faster_whisper_model_dir(path.parent):
             continue
         if not is_crispasr_model_file(path):
@@ -554,15 +472,7 @@ def _hf_repo_complete(org: str, name: str, min_bytes: int = 50_000_000) -> bool:
 
 def is_asr_cached(engine_type, model_size="medium", hub="ms") -> bool:
     if engine_type == "crispasr":
-        custom = resolve_custom_crispasr_model(model_size)
-        if custom:
-            return True
-        if model_size not in CRISPASR_MODEL_PROFILES:
-            return False
-        profile = crispasr_profile(model_size)
-        if _hf_cached_file(profile["repo_id"], profile["filename"]):
-            return True
-        return is_crispasr_model_file(_crispasr_legacy_model_path(model_size))
+        return resolve_custom_crispasr_model(model_size) is not None
     if engine_type == "funasr" or engine_type in FUNASR_LEGACY_ENGINE_ALIASES:
         model_key = (
             FUNASR_LEGACY_ENGINE_ALIASES[engine_type]
@@ -624,7 +534,7 @@ def get_missing_models(engine, model_size, hub) -> list:
     if not is_asr_cached(engine, model_size, hub):
         if engine == "whisper" and model_size not in _WHISPER_SIZES:
             return missing
-        if engine == "crispasr" and model_size not in CRISPASR_MODEL_PROFILES:
+        if engine == "crispasr":
             return missing
         if engine == "funasr" or engine in FUNASR_LEGACY_ENGINE_ALIASES:
             model_key = (
@@ -640,11 +550,6 @@ def get_missing_models(engine, model_size, hub) -> list:
             key = engine if engine != "whisper" else f"whisper-{model_size}"
             display = f"Whisper {model_size}"
             estimated_bytes = _MODEL_SIZE_BYTES.get(key, 0)
-        elif engine == "crispasr":
-            profile = crispasr_profile(model_size)
-            key = f"crispasr:{normalize_crispasr_model_key(model_size)}"
-            display = f"CrispASR {profile['display_name']}"
-            estimated_bytes = profile["estimated_bytes"]
         else:
             key = engine
             display = ASR_DISPLAY_NAMES.get(engine, engine)
@@ -666,17 +571,7 @@ def get_local_model_path(engine_type, hub="ms", funasr_model: str | None = None)
     """
     if engine_type == "crispasr":
         model_value = funasr_model
-        custom = resolve_custom_crispasr_model(model_value)
-        if custom:
-            return custom
-        if model_value not in CRISPASR_MODEL_PROFILES:
-            return None
-        profile = crispasr_profile(model_value)
-        path = _hf_cached_file(profile["repo_id"], profile["filename"])
-        if path:
-            return str(path.resolve())
-        legacy = _crispasr_legacy_model_path(model_value)
-        return str(legacy.resolve()) if is_crispasr_model_file(legacy) else None
+        return resolve_custom_crispasr_model(model_value)
 
     if engine_type == "funasr" or engine_type in FUNASR_LEGACY_ENGINE_ALIASES:
         model_key = (
@@ -771,22 +666,7 @@ def download_asr(engine, model_size="medium", hub="ms", proxy="system"):
     ms_cache = os.path.join(resolved, "modelscope")
     hf_cache = os.path.join(resolved, "huggingface", "hub")
     with _proxy_env(proxy):
-        if engine == "crispasr":
-            if model_size not in CRISPASR_MODEL_PROFILES:
-                raise ValueError(f"Invalid CrispASR model: {model_size}")
-            from huggingface_hub import hf_hub_download
-
-            profile = crispasr_profile(model_size)
-            log.info(
-                f"Downloading {profile['repo_id']}:{profile['filename']} "
-                "from HuggingFace..."
-            )
-            hf_hub_download(
-                repo_id=profile["repo_id"],
-                filename=profile["filename"],
-                cache_dir=hf_cache,
-            )
-        elif engine == "funasr" or engine in FUNASR_LEGACY_ENGINE_ALIASES:
+        if engine == "funasr" or engine in FUNASR_LEGACY_ENGINE_ALIASES:
             model_key = (
                 FUNASR_LEGACY_ENGINE_ALIASES[engine]
                 if engine in FUNASR_LEGACY_ENGINE_ALIASES
@@ -819,6 +699,8 @@ def download_asr(engine, model_size="medium", hub="ms", proxy="system"):
             model_id = f"Systran/faster-whisper-{model_size}"
             log.info(f"Downloading {model_id} from HuggingFace...")
             snapshot_download(repo_id=model_id, cache_dir=hf_cache)
+        else:
+            raise ValueError(f"Unsupported ASR download engine: {engine}")
     log.info(f"ASR model downloaded: {engine}")
 
 
@@ -870,11 +752,6 @@ def get_cache_entries():
             entries.append((f"{name} (ModelScope)", ms_path))
         if hf_path.exists():
             entries.append((f"{name} (HuggingFace)", hf_path))
-
-    for profile in CRISPASR_MODEL_PROFILES.values():
-        repo_dir = _hf_repo_cache_dir(profile["repo_id"])
-        if _hf_cached_file(profile["repo_id"], profile["filename"]):
-            entries.append((f"CrispASR {profile['display_name']} (HuggingFace)", repo_dir))
 
     for size in _WHISPER_SIZES:
         hf_path = hf_base / f"models--Systran--faster-whisper-{size}"

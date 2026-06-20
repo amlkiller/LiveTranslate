@@ -7,13 +7,10 @@ from typing import Callable
 from asr_client import ASRClient, ASRWorkerError, ASRWorkerExited, ASRWorkerTimeout
 from model_manager import (
     ASR_DISPLAY_NAMES,
-    CRISPASR_MODEL_PROFILES,
     DEFAULT_FUNASR_MODEL,
     MODELS_DIR,
-    crispasr_profile,
     funasr_display_name,
     funasr_supports_padding,
-    get_local_model_path,
     get_missing_models,
     is_asr_cached,
     local_crispasr_display_name,
@@ -180,18 +177,13 @@ class ASRService:
             if custom_crispasr_path:
                 cache_model_key = custom_crispasr_path
                 crispasr_model_path_value = custom_crispasr_path
-            elif crispasr_model in CRISPASR_MODEL_PROFILES:
-                cache_model_key = crispasr_model
-                crispasr_model_path_value = get_local_model_path(
-                    "crispasr", hub=hub, funasr_model=crispasr_model
-                )
             else:
                 return self._invalid_plan(
                     engine_type,
                     device,
                     hub,
                     download_proxy,
-                    f"CrispASR model is invalid or unavailable: {crispasr_model}; "
+                    f"CrispASR model must be a local .gguf/.bin file: {crispasr_model}; "
                     "keeping current ASR worker",
                 )
 
@@ -247,15 +239,6 @@ class ASRService:
         display_name = self._display_name(
             engine_type, model_size, model_path, funasr_model, crispasr_model
         )
-        if engine_type == "crispasr":
-            custom_crispasr_path = resolve_custom_crispasr_model(crispasr_model)
-            profile = {} if custom_crispasr_path else crispasr_profile(crispasr_model)
-            if (
-                profile.get("needs_punctuation")
-                and crispasr_punc_model in (None, "", "auto")
-            ):
-                crispasr_punc_model = "auto"
-
         worker_config = {
             "engine_type": engine_type,
             "funasr_model": funasr_model,
@@ -325,18 +308,6 @@ class ASRService:
             target_state=target_state,
             missing_models=missing,
         )
-
-    def complete_download(self, plan: ASRSwitchPlan) -> str | None:
-        if plan.engine_type != "crispasr":
-            return None
-        model_path = get_local_model_path(
-            "crispasr", hub=plan.hub, funasr_model=plan.cache_model_key
-        )
-        if not model_path:
-            return "CrispASR model file was not found after download"
-        plan.worker_config["crispasr_model_path"] = model_path
-        plan.target_state["config"] = plan.worker_config
-        return None
 
     def mark_download_cancelled(self):
         with self._asr_lock:
@@ -572,8 +543,4 @@ class ASRService:
                     or Path(crispasr_model).name
                 )
                 display_name = f"CrispASR {display_model}"
-            else:
-                display_name = (
-                    f"CrispASR {crispasr_profile(crispasr_model)['display_name']}"
-                )
         return display_name

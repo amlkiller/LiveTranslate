@@ -36,7 +36,6 @@ from model_manager import (
     DEFAULT_FUNASR_MODEL,
     MODELS_DIR,
     _WHISPER_SIZES,
-    crispasr_model_options,
     dir_size,
     funasr_model_options,
     funasr_supports_padding,
@@ -374,7 +373,7 @@ class ControlPanel(QWidget):
         layout.addWidget(self._whisper_group)
         self._whisper_group.setVisible(engine_idx == 0)
 
-        self._crispasr_group = QGroupBox(t("group_download_crispasr"))
+        self._crispasr_group = QGroupBox(t("group_crispasr_model"))
         crispasr_layout = QHBoxLayout(self._crispasr_group)
         self._crispasr_model_combo = QComboBox()
         saved_crispasr_model = s.get("crispasr_model", "")
@@ -386,9 +385,6 @@ class ControlPanel(QWidget):
         self._crispasr_status = QLabel("")
         self._crispasr_status.setStyleSheet("color: #888; font-size: 11px;")
         crispasr_layout.addWidget(self._crispasr_status, 1)
-        self._crispasr_dl_btn = QPushButton(t("btn_download_crispasr"))
-        self._crispasr_dl_btn.clicked.connect(self._download_crispasr)
-        crispasr_layout.addWidget(self._crispasr_dl_btn)
         layout.addWidget(self._crispasr_group)
         self._crispasr_group.setVisible(engine_idx == 3)
         self._asr_engine.currentIndexChanged.connect(
@@ -1174,10 +1170,7 @@ class ControlPanel(QWidget):
 
     def _populate_crispasr_models(self, saved_value: str):
         self._crispasr_model_combo.clear()
-        builtin_models = dict(crispasr_model_options())
         self._crispasr_model_combo.addItem(t("crispasr_model_placeholder"), "")
-        for key, display_name in crispasr_model_options():
-            self._crispasr_model_combo.addItem(display_name, key)
 
         local_prefix = t("crispasr_local_prefix")
         for item in list_local_crispasr_models():
@@ -1191,8 +1184,6 @@ class ControlPanel(QWidget):
 
         if not saved_value:
             selected = ""
-        elif saved_value in builtin_models:
-            selected = saved_value
         else:
             selected = resolve_custom_crispasr_model(saved_value) or saved_value
         idx = self._crispasr_model_combo.findData(selected)
@@ -1295,54 +1286,21 @@ class ControlPanel(QWidget):
             self._auto_save()
 
     def _update_crispasr_status(self):
-        from model_manager import is_asr_cached, crispasr_profile
+        from model_manager import is_asr_cached
 
         model_key = self._selected_crispasr_model()
         if not model_key:
             self._crispasr_status.setText(t("crispasr_select_model"))
             self._crispasr_status.setStyleSheet("color: #888; font-size: 11px;")
-            self._crispasr_dl_btn.setEnabled(False)
             return
         hub = self._current_settings.get("hub", "ms")
         cached = is_asr_cached("crispasr", model_key, hub)
-        if model_key not in dict(crispasr_model_options()):
-            if cached:
-                self._crispasr_status.setText(t("crispasr_local_ready"))
-                self._crispasr_status.setStyleSheet("color: #4a4; font-size: 11px;")
-            else:
-                self._crispasr_status.setText(t("crispasr_invalid_local"))
-                self._crispasr_status.setStyleSheet("color: #d66; font-size: 11px;")
-            self._crispasr_dl_btn.setEnabled(False)
-            return
         if cached:
-            self._crispasr_status.setText(t("crispasr_already_cached"))
+            self._crispasr_status.setText(t("crispasr_local_ready"))
             self._crispasr_status.setStyleSheet("color: #4a4; font-size: 11px;")
-            self._crispasr_dl_btn.setEnabled(False)
         else:
-            est = crispasr_profile(model_key).get("estimated_bytes", 0)
-            self._crispasr_status.setText(f"~{format_size(est)}")
-            self._crispasr_status.setStyleSheet("color: #888; font-size: 11px;")
-            self._crispasr_dl_btn.setEnabled(True)
-
-    def _download_crispasr(self):
-        from model_manager import is_asr_cached, get_missing_models
-
-        model_key = self._selected_crispasr_model()
-        if not model_key:
-            return
-        hub = self._current_settings.get("hub", "ms")
-        if is_asr_cached("crispasr", model_key, hub):
-            return
-        missing = get_missing_models("crispasr", model_key, hub)
-        missing = [m for m in missing if m["type"] != "silero-vad"]
-        if not missing:
-            return
-        from dialogs import ModelDownloadDialog
-
-        dlg = ModelDownloadDialog(missing, hub=hub, parent=self)
-        if dlg.exec() == dlg.DialogCode.Accepted:
-            self._update_crispasr_status()
-            self._auto_save()
+            self._crispasr_status.setText(t("crispasr_invalid_local"))
+            self._crispasr_status.setStyleSheet("color: #d66; font-size: 11px;")
 
     # ── Model Management ──
 
