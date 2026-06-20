@@ -9,7 +9,7 @@ audio:
   chunk_duration: 0.032
 
 asr:
-  # ASR engine: whisper, funasr, anime-whisper, crispasr, sherpa-onnx
+  # ASR engine: whisper, funasr, anime-whisper, remote-whisper, crispasr, sherpa-onnx
   asr_engine: "funasr"
   # Model size: tiny, base, small, medium, large-v3
   model_size: "medium"
@@ -24,6 +24,8 @@ asr:
   crispasr_unified_memory: true
   # sherpa-onnx local model directory. Empty means user has not selected a model yet.
   sherpa_onnx_model: ""
+  # Remote Whisper server URL used when asr_engine is remote-whisper.
+  remote_asr_url: "http://127.0.0.1:8765"
   # sherpa-onnx provider: auto, cpu, cuda. Auto uses CUDA only with a CUDA sherpa-onnx wheel and CUDA ASR device.
   sherpa_onnx_provider: "auto"
   sherpa_onnx_num_threads: 2

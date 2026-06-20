@@ -104,6 +104,11 @@ class ASRService:
         with self._asr_lock:
             return self._asr_type
 
+    @property
+    def worker_pid(self) -> int | None:
+        with self._asr_lock:
+            return getattr(self._asr, "pid", None)
+
     def status_snapshot(self) -> ASRStatus:
         with self._asr_lock:
             display_name = (self._asr_config or {}).get("display_name")
@@ -211,6 +216,15 @@ class ASRService:
         )
         sherpa_onnx_model_path = None
         sherpa_onnx_model_info = None
+        remote_asr_url = str(
+            settings.get(
+                "remote_asr_url",
+                self._config["asr"].get("remote_asr_url", "http://127.0.0.1:8765"),
+            )
+            or "http://127.0.0.1:8765"
+        ).strip()
+        if not remote_asr_url:
+            remote_asr_url = "http://127.0.0.1:8765"
 
         if engine_type == "whisper":
             model_path = resolve_custom_whisper_model(model_size)
@@ -272,6 +286,8 @@ class ASRService:
                     f"{sherpa_onnx_model_path}; keeping current ASR worker",
                 )
             cache_model_key = sherpa_onnx_model_path
+        elif engine_type == "remote-whisper":
+            cache_model_key = remote_asr_url
 
         compute = self._config["asr"]["compute_type"]
         if engine_type == "whisper":
@@ -297,6 +313,8 @@ class ASRService:
                 sherpa_onnx_left_padding_seconds,
                 sherpa_onnx_tail_padding_seconds,
             )
+        elif engine_type == "remote-whisper":
+            signature_model = remote_asr_url
         else:
             signature_model = engine_type
         language = settings.get(
@@ -363,6 +381,7 @@ class ASRService:
             ),
             "download_root": str((MODELS_DIR / "huggingface" / "hub").resolve()),
             "display_name": display_name,
+            "remote_asr_url": remote_asr_url,
         }
         if engine_type == "crispasr":
             worker_config.update(
@@ -407,6 +426,9 @@ class ASRService:
             else self._sherpa_onnx_model_path,
             "config": worker_config,
             "display_name": display_name,
+            "device_label": remote_asr_url
+            if engine_type == "remote-whisper"
+            else device,
         }
 
         missing = []
@@ -464,14 +486,14 @@ class ASRService:
                 self._release_memory_caches()
 
         try:
-            new_asr = self._load_asr_client(plan.worker_config)
+            new_asr = self._load_engine_client(plan.worker_config)
         except Exception as exc:
             load_error = str(exc)
             log.error(f"Failed to load ASR worker: {exc}", exc_info=True)
             if old_config:
                 try:
                     log.info("Restoring previous ASR worker after switch failure")
-                    restored_asr = self._load_asr_client(old_config)
+                    restored_asr = self._load_engine_client(old_config)
                 except Exception as restore_exc:
                     restore_error = str(restore_exc)
                     log.error(
@@ -621,6 +643,20 @@ class ASRService:
         except Exception:
             client.shutdown()
             raise
+
+    def _load_engine_client(self, worker_config: dict):
+        if worker_config.get("engine_type") == "remote-whisper":
+            from asr_remote import RemoteASREngine
+
+            engine = RemoteASREngine(
+                server_url=worker_config.get("remote_asr_url")
+                or "http://127.0.0.1:8765"
+            )
+            language = worker_config.get("language")
+            if language:
+                engine.set_language(language)
+            return engine
+        return self._load_asr_client(worker_config)
 
     def _activate_asr(self, client: ASRClient, state: dict):
         with self._asr_lock:

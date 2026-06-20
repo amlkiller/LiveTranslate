@@ -6,6 +6,10 @@
 - sherpa-onnx online transducer 模型当前通过 `OnlineRecognizer` 对 VAD 切段做整段识别; 暂未启用 partial streaming ASR
 - sherpa-onnx 默认不内置下载器: 将官方模型解压到 `models/` 下任意子目录后在设置中刷新选择
 - 安装脚本默认安装 CPU 版 sherpa-onnx runtime, 可通过 `-SherpaOnnxRuntime cuda11/cuda12` 安装 CUDA wheel
+- 新增「远程 Whisper」ASR 引擎: 把语音识别外包到带 GPU 的另一台机器 (附 `asr_server.py` 服务端), 无 GPU 的机器也能实时识别
+- 新增「WebID 身份核验」翻译提示词预设: 针对视频核验场景调优用词
+- ASR 改为子进程隔离运行: 识别故障不再拖垮界面进程
+- 字幕窗口支持鼠标穿透 (#28): 字幕设置里新增开关, 托盘菜单可「字幕鼠标穿透」快速切换, 开启后点击直达背后窗口 (此时中键拖动失效, 先关穿透再移动)
 
 ## 2026-06-19
 - 修复 CrispASR 启动时报 `No module named 'crispasr'`: `pyproject.toml` 新增 CrispASR Python binding 依赖, 固定到 GitHub Releases `v0.7.2`

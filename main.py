@@ -185,8 +185,10 @@ class LiveTranslateApp:
         self._mem_last_mb = self._mem_baseline_mb
         self._mem_asr_call_count = 0
         self._mem_periodic_timer = None
-        # Memory ceiling: warn once when RSS exceeds threshold. ASR backends keep
-        # native-side workspaces/caches that Python GC cannot always reclaim.
+        # Memory ceiling: warn once when combined RSS (main + ASR worker) exceeds
+        # threshold. The ASR backend now runs in a worker process and keeps
+        # native-side workspaces/caches that Python GC cannot always reclaim, so the
+        # ceiling must include the worker's RSS (see _mem_snapshot).
         self._mem_threshold_mb = 4096
         self._mem_warned = False
         self._mem_warning_callback = None
@@ -258,6 +260,7 @@ class LiveTranslateApp:
                 "sherpa_onnx_provider",
                 "sherpa_onnx_num_threads",
                 "sherpa_onnx_decoding_method",
+                "remote_asr_url",
                 "hub",
             )
         ):
@@ -389,9 +392,11 @@ class LiveTranslateApp:
             return
 
         if result.status == "ready":
+            target_state = result.target_state or plan.target_state or {}
+            device_label = target_state.get("device_label", plan.device)
             if self._overlay:
                 self._overlay.update_asr_device(
-                    f"{plan.display_name} [{plan.device}]"
+                    f"{plan.display_name} [{device_label}]"
                 )
             return
 
@@ -400,7 +405,7 @@ class LiveTranslateApp:
             restored_name = old_state.get("display_name") or old_state.get("type")
             if self._overlay:
                 self._overlay.update_asr_device(
-                    f"{restored_name} [{old_state['device']}]"
+                    f"{restored_name} [{old_state.get('device_label', old_state['device'])}]"
                 )
             QMessageBox.warning(
                 parent,
@@ -431,6 +436,19 @@ class LiveTranslateApp:
 
     def _mem_snapshot(self) -> dict:
         rss_mb = self._mem_proc.memory_info().rss / 1024 / 1024
+        # The ASR model (and its native-side leak) lives in the worker process now,
+        # so sample its RSS too; the main process holds only VAD + Qt.
+        worker_rss_mb = 0.0
+        worker_pid = self._asr_service.worker_pid
+        if worker_pid is not None:
+            try:
+                import psutil
+
+                worker_rss_mb = (
+                    psutil.Process(worker_pid).memory_info().rss / 1024 / 1024
+                )
+            except Exception:
+                worker_rss_mb = 0.0
         gpu_alloc_mb = 0.0
         gpu_reserved_mb = 0.0
         try:
@@ -443,6 +461,8 @@ class LiveTranslateApp:
         vad_buf = self._pipeline.buffer_stats()["chunks"]
         return {
             "rss": rss_mb,
+            "worker_rss": worker_rss_mb,
+            "total_rss": rss_mb + worker_rss_mb,
             "gpu_alloc": gpu_alloc_mb,
             "gpu_reserved": gpu_reserved_mb,
             "msgs": msgs,
@@ -458,11 +478,12 @@ class LiveTranslateApp:
         log.info(
             f"MEM[asr#{self._mem_asr_call_count}:{kind}] RSS={snap['rss']:.1f}MB "
             f"(Δ{delta:+.2f} since last, {total_delta:+.1f} since start) "
-            f"GPU(alloc/reserved)={snap['gpu_alloc']:.0f}/{snap['gpu_reserved']:.0f}MB "
+            f"worker_rss={snap['worker_rss']:.0f}MB "
+            f"GPU(main alloc/reserved)={snap['gpu_alloc']:.0f}/{snap['gpu_reserved']:.0f}MB "
             f"audio={audio_seconds:.1f}s asr={asr_ms:.0f}ms "
             f"outputs={self._asr_count} msgs={snap['msgs']} vad_buf={snap['vad_buf']}"
         )
-        self._check_memory_threshold(snap["rss"])
+        self._check_memory_threshold(snap["total_rss"])
 
     def _release_memory_caches(self):
         gc.collect()
@@ -494,7 +515,7 @@ class LiveTranslateApp:
             return
         self._mem_warned = True
         log.warning(
-            f"Memory ceiling reached: RSS={rss_mb:.0f}MB "
+            f"Memory ceiling reached: combined RSS (main+worker)={rss_mb:.0f}MB "
             f"(threshold {self._mem_threshold_mb}MB). "
             f"Recommend restarting LiveTranslate to free C-side allocator caches."
         )
@@ -512,11 +533,12 @@ class LiveTranslateApp:
         total_delta = snap["rss"] - self._mem_baseline_mb
         log.info(
             f"MEM[tick] RSS={snap['rss']:.1f}MB ({total_delta:+.1f} since start) "
-            f"GPU(alloc/reserved)={snap['gpu_alloc']:.0f}/{snap['gpu_reserved']:.0f}MB "
+            f"worker_rss={snap['worker_rss']:.0f}MB "
+            f"GPU(main alloc/reserved)={snap['gpu_alloc']:.0f}/{snap['gpu_reserved']:.0f}MB "
             f"msgs={snap['msgs']} asr_calls={self._mem_asr_call_count} "
             f"asr_count={self._asr_count} tl_count={self._translate_count}"
         )
-        self._check_memory_threshold(snap["rss"])
+        self._check_memory_threshold(snap["total_rss"])
 
     def _compute_cost(self):
         if self._input_price > 0 or self._output_price > 0:
@@ -719,7 +741,6 @@ class LiveTranslateApp:
                 )
             except RuntimeError:
                 log.warning("Translation executor shut down, skipping")
-
 
 def main():
     setup_logging()
@@ -1019,6 +1040,28 @@ def main():
 
     menu.addAction(subwin_toggle_action)
 
+    # Quick toggle for subtitle-window click-through (mirrors the settings checkbox).
+    subwin_ct_action = QAction(t("subwin_click_through_tray"), checkable=True)
+    _subwin_init = panel.get_settings().get("subtitle_mode") or {}
+    subwin_ct_action.setChecked(bool(_subwin_init.get("click_through", False)))
+
+    def on_toggle_subwin_ct(checked):
+        subwin.set_click_through(checked)
+        settings = panel.get_settings()
+        sm = settings.get("subtitle_mode") or {}
+        sm["click_through"] = checked
+        settings["subtitle_mode"] = sm
+        panel._current_settings["subtitle_mode"] = sm
+        _save_settings(settings)
+        w = panel._subtitle_widget
+        w._click_through_check.blockSignals(True)
+        w._click_through_check.setChecked(checked)
+        w._click_through_check.blockSignals(False)
+        w._settings["click_through"] = checked
+
+    subwin_ct_action.toggled.connect(on_toggle_subwin_ct)
+    menu.addAction(subwin_ct_action)
+
     # Connect overlay subtitle button
     def _on_overlay_subtitle_toggle():
         subwin_toggle_action.setChecked(not subwin_toggle_action.isChecked())
@@ -1028,6 +1071,9 @@ def main():
     # Connect panel subtitle settings changes
     def _on_panel_subtitle_changed(s):
         subwin.apply_settings(s)
+        subwin_ct_action.blockSignals(True)
+        subwin_ct_action.setChecked(bool(s.get("click_through", False)))
+        subwin_ct_action.blockSignals(False)
 
     panel.subtitle_settings_changed.connect(_on_panel_subtitle_changed)
 

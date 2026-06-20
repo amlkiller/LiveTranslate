@@ -16,6 +16,7 @@ from PyQt6.QtWidgets import (
     QGroupBox,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
     QListWidget,
     QListWidgetItem,
     QMessageBox,
@@ -134,6 +135,7 @@ class ControlPanel(QWidget):
             (f"[{t('asr_accurate')}] Whisper (faster-whisper)", "whisper"),
             (f"[{t('asr_fast')}] FunASR", "funasr"),
             ("Anime-Whisper (ja, anime/galgame)", "anime-whisper"),
+            ("Remote Whisper (remote GPU server)", "remote-whisper"),
             ("CrispASR (ggml)", "crispasr"),
             ("sherpa-onnx (ONNX)", "sherpa-onnx"),
         ):
@@ -446,6 +448,21 @@ class ControlPanel(QWidget):
         self._sherpa_onnx_group.setVisible(
             self._selected_asr_engine() == "sherpa-onnx"
         )
+        # Remote ASR server URL — only visible when engine is Remote Whisper
+        self._remote_group = QGroupBox("Remote ASR Server")
+        remote_layout = QHBoxLayout(self._remote_group)
+        remote_layout.addWidget(QLabel("URL"))
+        self._remote_url_edit = QLineEdit(
+            s.get("remote_asr_url", "http://127.0.0.1:8765")
+        )
+        self._remote_url_edit.setPlaceholderText("http://127.0.0.1:8765")
+        self._remote_url_edit.editingFinished.connect(self._auto_save)
+        remote_layout.addWidget(self._remote_url_edit, 1)
+        layout.addWidget(self._remote_group)
+        self._remote_group.setVisible(
+            self._selected_asr_engine() == "remote-whisper"
+        )
+
         self._asr_engine.currentIndexChanged.connect(
             self._on_asr_engine_changed
         )
@@ -607,11 +624,12 @@ class ControlPanel(QWidget):
         self._prompt_preset.addItem(t("prompt_daily"), "daily")
         self._prompt_preset.addItem(t("prompt_esports"), "esports")
         self._prompt_preset.addItem(t("prompt_anime"), "anime")
+        self._prompt_preset.addItem(t("prompt_webid"), "webid")
         self._prompt_preset.addItem(t("prompt_custom"), "custom")
 
         current_prompt = s.get("system_prompt", DEFAULT_PROMPT)
-        preset_idx = 3  # default to custom
-        for i, key in enumerate(["daily", "esports", "anime"]):
+        preset_idx = 4  # default to custom
+        for i, key in enumerate(["daily", "esports", "anime", "webid"]):
             if current_prompt.strip() == PROMPT_PRESETS[key].strip():
                 preset_idx = i
                 break
@@ -1158,6 +1176,7 @@ class ControlPanel(QWidget):
         engine = self._selected_asr_engine()
         is_whisper = engine == "whisper"
         is_funasr = engine == "funasr"
+        is_remote = engine == "remote-whisper"
         is_crispasr = engine == "crispasr"
         is_sherpa_onnx = engine == "sherpa-onnx"
         self._whisper_group.setVisible(is_whisper)
@@ -1192,6 +1211,8 @@ class ControlPanel(QWidget):
             )
             self._sensevoice_pad_label.setVisible(show_funasr_pad)
             self._sensevoice_pad_seconds.setVisible(show_funasr_pad)
+        if hasattr(self, "_remote_group"):
+            self._remote_group.setVisible(is_remote)
         # Resize window to fit content after whisper group visibility change
         def _fit():
             self.adjustSize()
@@ -1714,8 +1735,8 @@ class ControlPanel(QWidget):
             # Update preset combo to reflect current state
             from translator import PROMPT_PRESETS
             self._prompt_preset.blockSignals(True)
-            matched = 3  # custom
-            for i, key in enumerate(["daily", "esports", "anime"]):
+            matched = 4  # custom
+            for i, key in enumerate(["daily", "esports", "anime", "webid"]):
                 if text.strip() == PROMPT_PRESETS[key].strip():
                     matched = i
                     break
@@ -1726,6 +1747,10 @@ class ControlPanel(QWidget):
         self._current_settings["asr_language"] = self._get_asr_lang_code()
         self._current_settings["asr_engine"] = self._selected_asr_engine()
         self._current_settings["funasr_model"] = self._selected_funasr_model()
+        if hasattr(self, "_remote_url_edit"):
+            url = self._remote_url_edit.text().strip()
+            if url:
+                self._current_settings["remote_asr_url"] = url
         self._current_settings["whisper_model_size"] = (
             self._selected_whisper_model()
         )

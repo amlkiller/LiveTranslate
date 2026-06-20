@@ -51,6 +51,9 @@ def normalize_settings(config: dict[str, Any], saved: dict | None = None) -> dic
     )
     settings.setdefault("sherpa_onnx_model", asr.get("sherpa_onnx_model", ""))
     settings.setdefault(
+        "remote_asr_url", asr.get("remote_asr_url", "http://127.0.0.1:8765")
+    )
+    settings.setdefault(
         "sherpa_onnx_provider", asr.get("sherpa_onnx_provider", "auto")
     )
     settings.setdefault(

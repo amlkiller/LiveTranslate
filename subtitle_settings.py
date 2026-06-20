@@ -439,6 +439,15 @@ class SubtitleSettingsWidget(QWidget):
         self._hide_duration_spin.setValue(self._settings.get("auto_hide_duration", 300))
         self._hide_duration_spin.valueChanged.connect(self._on_change)
         g.addWidget(self._hide_duration_spin, r, 1)
+        r += 1
+
+        g.addWidget(QLabel(t("subwin_click_through")), r, 0)
+        self._click_through_check = QCheckBox(t("subwin_click_through_hint"))
+        self._click_through_check.setChecked(
+            self._settings.get("click_through", False)
+        )
+        self._click_through_check.toggled.connect(self._on_change)
+        g.addWidget(self._click_through_check, r, 1)
 
         self._update_win_bg_controls_state()
         layout.addWidget(win_group)
@@ -611,6 +620,7 @@ class SubtitleSettingsWidget(QWidget):
             "auto_hide_timeout": self._auto_hide_spin.value(),
             "auto_hide_animation": self._hide_anim_combo.currentData() or "fade",
             "auto_hide_duration": self._hide_duration_spin.value(),
+            "click_through": self._click_through_check.isChecked(),
             "lines": self._settings.get("lines", DEFAULT_SUBTITLE_WIN_SETTINGS["lines"]),
         }
         self._settings.update(s)

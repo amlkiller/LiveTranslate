@@ -143,6 +143,7 @@ ASR_DISPLAY_NAMES = {
     "anime-whisper": "Anime-Whisper",
     "crispasr": "CrispASR",
     "sherpa-onnx": "sherpa-onnx",
+    "remote-whisper": "Remote-Whisper",
 }
 
 _CRISPASR_EXTS = {".gguf", ".bin"}

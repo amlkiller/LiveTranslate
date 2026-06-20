@@ -6,6 +6,10 @@
 - sherpa-onnx online transducer models use `OnlineRecognizer` as a VAD segment wrapper in this phase; partial streaming ASR is not enabled yet
 - sherpa-onnx does not use a built-in downloader in this phase: extract official models anywhere under `models/`, then refresh and select them in settings
 - Installer now installs the CPU sherpa-onnx runtime by default, with `-SherpaOnnxRuntime cuda11/cuda12` for CUDA wheels
+- New "Remote Whisper" ASR engine: offload speech recognition to a separate GPU machine (ships `asr_server.py` server), so a box without a GPU can still transcribe in real time
+- New "WebID / ID Verify" translation prompt preset, tuned for video identity-verification calls
+- ASR now runs in an isolated subprocess, so recognition failures no longer drag down the UI process
+- Subtitle window mouse click-through (#28): a toggle in the subtitle settings plus a "Subtitle Click-through" tray shortcut; when on, clicks pass to the window behind (middle-click drag is disabled while on — turn it off to reposition)
 
 ## 2026-06-19
 - Fix CrispASR startup failure with `No module named 'crispasr'`: added the CrispASR Python binding to `pyproject.toml`, pinned to GitHub Releases `v0.7.2`
