@@ -9,7 +9,9 @@ from model_manager import (
     ASR_DISPLAY_NAMES,
     DEFAULT_FUNASR_MODEL,
     MODELS_DIR,
+    detect_parakeet_cpp_runtime_dir,
     detect_sherpa_onnx_model_dir,
+    get_parakeet_cpp_model_path,
     funasr_display_name,
     funasr_supports_padding,
     get_missing_models,
@@ -17,9 +19,11 @@ from model_manager import (
     is_asr_cached,
     local_crispasr_display_name,
     local_faster_whisper_display_name,
+    local_parakeet_cpp_display_name,
     local_sherpa_onnx_display_name,
     normalize_asr_engine_selection,
     normalize_funasr_model_key,
+    resolve_parakeet_cpp_runtime_dir,
     resolve_custom_crispasr_model,
     resolve_custom_whisper_model,
 )
@@ -87,6 +91,12 @@ class ASRService:
         self._crispasr_model_key = str(config["asr"].get("crispasr_model", "") or "")
         self._sherpa_onnx_model_path = str(
             config["asr"].get("sherpa_onnx_model", "") or ""
+        )
+        self._parakeet_cpp_model_key = str(
+            config["asr"].get("parakeet_cpp_model", "") or ""
+        )
+        self._parakeet_cpp_runtime_dir = str(
+            config["asr"].get("parakeet_cpp_runtime_dir", "") or ""
         )
         self._asr_lock = threading.RLock()
 
@@ -216,6 +226,46 @@ class ASRService:
         )
         sherpa_onnx_model_path = None
         sherpa_onnx_model_info = None
+        parakeet_cpp_model = str(
+            settings.get(
+                "parakeet_cpp_model",
+                self._config["asr"].get(
+                    "parakeet_cpp_model", self._parakeet_cpp_model_key
+                ),
+            )
+            or ""
+        )
+        parakeet_cpp_runtime_dir_value = str(
+            settings.get(
+                "parakeet_cpp_runtime_dir",
+                self._config["asr"].get(
+                    "parakeet_cpp_runtime_dir", self._parakeet_cpp_runtime_dir
+                ),
+            )
+            or ""
+        )
+        parakeet_cpp_backend = str(
+            settings.get(
+                "parakeet_cpp_backend",
+                self._config["asr"].get("parakeet_cpp_backend", "auto"),
+            )
+            or "auto"
+        ).lower()
+        parakeet_cpp_decoder = str(
+            settings.get(
+                "parakeet_cpp_decoder",
+                self._config["asr"].get("parakeet_cpp_decoder", "auto"),
+            )
+            or "auto"
+        ).lower()
+        parakeet_cpp_word_timestamps = bool(
+            settings.get(
+                "parakeet_cpp_word_timestamps",
+                self._config["asr"].get("parakeet_cpp_word_timestamps", True),
+            )
+        )
+        parakeet_cpp_model_path = None
+        parakeet_cpp_runtime_dir = None
         remote_asr_url = str(
             settings.get(
                 "remote_asr_url",
@@ -286,6 +336,65 @@ class ASRService:
                     f"{sherpa_onnx_model_path}; keeping current ASR worker",
                 )
             cache_model_key = sherpa_onnx_model_path
+        elif engine_type == "parakeet-cpp":
+            if not parakeet_cpp_model:
+                return self._invalid_plan(
+                    engine_type,
+                    device,
+                    hub,
+                    download_proxy,
+                    "parakeet.cpp model is not selected; keeping current ASR worker",
+                )
+            parakeet_cpp_model_path = get_parakeet_cpp_model_path(parakeet_cpp_model)
+            if not parakeet_cpp_model_path:
+                return self._invalid_plan(
+                    engine_type,
+                    device,
+                    hub,
+                    download_proxy,
+                    f"parakeet.cpp model file is unavailable or unrecognized: "
+                    f"{parakeet_cpp_model}; keeping current ASR worker",
+                )
+            if parakeet_cpp_backend not in ("auto", "cpu", "cuda", "vulkan"):
+                return self._invalid_plan(
+                    engine_type,
+                    device,
+                    hub,
+                    download_proxy,
+                    f"Unsupported parakeet.cpp backend: {parakeet_cpp_backend}",
+                )
+            if parakeet_cpp_decoder not in ("auto", "ctc", "tdt", "rnnt"):
+                return self._invalid_plan(
+                    engine_type,
+                    device,
+                    hub,
+                    download_proxy,
+                    f"Unsupported parakeet.cpp decoder: {parakeet_cpp_decoder}",
+                )
+            parakeet_cpp_runtime_dir = resolve_parakeet_cpp_runtime_dir(
+                parakeet_cpp_runtime_dir_value,
+                "auto" if parakeet_cpp_backend == "auto" else parakeet_cpp_backend,
+            )
+            if not parakeet_cpp_runtime_dir:
+                return self._invalid_plan(
+                    engine_type,
+                    device,
+                    hub,
+                    download_proxy,
+                    f"parakeet.cpp runtime dir is unavailable or unrecognized: "
+                    f"{parakeet_cpp_runtime_dir_value}; keeping current ASR worker",
+                )
+            runtime_info = detect_parakeet_cpp_runtime_dir(parakeet_cpp_runtime_dir)
+            if not runtime_info:
+                return self._invalid_plan(
+                    engine_type,
+                    device,
+                    hub,
+                    download_proxy,
+                    f"parakeet.cpp runtime dir is unavailable or unrecognized: "
+                    f"{parakeet_cpp_runtime_dir}; keeping current ASR worker",
+                )
+            cache_model_key = parakeet_cpp_model_path
         elif engine_type == "remote-whisper":
             cache_model_key = remote_asr_url
 
@@ -312,6 +421,14 @@ class ASRService:
                 sherpa_onnx_decoding_method,
                 sherpa_onnx_left_padding_seconds,
                 sherpa_onnx_tail_padding_seconds,
+            )
+        elif engine_type == "parakeet-cpp":
+            signature_model = (
+                parakeet_cpp_model_path,
+                parakeet_cpp_runtime_dir,
+                parakeet_cpp_backend,
+                parakeet_cpp_decoder,
+                parakeet_cpp_word_timestamps,
             )
         elif engine_type == "remote-whisper":
             signature_model = remote_asr_url
@@ -357,6 +474,7 @@ class ASRService:
             funasr_model,
             crispasr_model,
             sherpa_onnx_model_path,
+            parakeet_cpp_model_path,
         )
         worker_config = {
             "engine_type": engine_type,
@@ -408,6 +526,17 @@ class ASRService:
                     "sherpa_onnx_tail_padding_seconds": sherpa_onnx_tail_padding_seconds,
                 }
             )
+        elif engine_type == "parakeet-cpp":
+            worker_config.update(
+                {
+                    "parakeet_cpp_model": parakeet_cpp_model,
+                    "parakeet_cpp_model_path": parakeet_cpp_model_path,
+                    "parakeet_cpp_runtime_dir": parakeet_cpp_runtime_dir,
+                    "parakeet_cpp_backend": parakeet_cpp_backend,
+                    "parakeet_cpp_decoder": parakeet_cpp_decoder,
+                    "parakeet_cpp_word_timestamps": parakeet_cpp_word_timestamps,
+                }
+            )
         target_state = {
             "type": engine_type,
             "signature": signature,
@@ -424,6 +553,12 @@ class ASRService:
             "sherpa_onnx_model_path": sherpa_onnx_model_path
             if engine_type == "sherpa-onnx"
             else self._sherpa_onnx_model_path,
+            "parakeet_cpp_model_key": parakeet_cpp_model
+            if engine_type == "parakeet-cpp"
+            else self._parakeet_cpp_model_key,
+            "parakeet_cpp_runtime_dir": parakeet_cpp_runtime_dir
+            if engine_type == "parakeet-cpp"
+            else self._parakeet_cpp_runtime_dir,
             "config": worker_config,
             "display_name": display_name,
             "device_label": remote_asr_url
@@ -464,6 +599,8 @@ class ASRService:
                 "whisper_model_size": self._whisper_model_size,
                 "crispasr_model_key": self._crispasr_model_key,
                 "sherpa_onnx_model_path": self._sherpa_onnx_model_path,
+                "parakeet_cpp_model_key": self._parakeet_cpp_model_key,
+                "parakeet_cpp_runtime_dir": self._parakeet_cpp_runtime_dir,
                 "config": old_config,
                 "display_name": (old_config or {}).get("display_name"),
             }
@@ -671,6 +808,12 @@ class ASRService:
             self._sherpa_onnx_model_path = state.get(
                 "sherpa_onnx_model_path", self._sherpa_onnx_model_path
             )
+            self._parakeet_cpp_model_key = state.get(
+                "parakeet_cpp_model_key", self._parakeet_cpp_model_key
+            )
+            self._parakeet_cpp_runtime_dir = state.get(
+                "parakeet_cpp_runtime_dir", self._parakeet_cpp_runtime_dir
+            )
             self._asr_ready = True
             self._asr_error_count = 0
 
@@ -682,6 +825,7 @@ class ASRService:
         funasr_model: str,
         crispasr_model: str,
         sherpa_onnx_model_path: str | None = None,
+        parakeet_cpp_model_path: str | None = None,
     ) -> str:
         display_name = ASR_DISPLAY_NAMES.get(engine_type, engine_type)
         if engine_type == "whisper":
@@ -707,4 +851,10 @@ class ASRService:
                 or Path(sherpa_onnx_model_path).name
             )
             display_name = f"sherpa-onnx {display_model}"
+        elif engine_type == "parakeet-cpp" and parakeet_cpp_model_path:
+            display_model = (
+                local_parakeet_cpp_display_name(parakeet_cpp_model_path)
+                or Path(parakeet_cpp_model_path).name
+            )
+            display_name = f"parakeet.cpp {display_model}"
         return display_name

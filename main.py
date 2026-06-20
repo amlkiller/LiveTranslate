@@ -260,6 +260,11 @@ class LiveTranslateApp:
                 "sherpa_onnx_provider",
                 "sherpa_onnx_num_threads",
                 "sherpa_onnx_decoding_method",
+                "parakeet_cpp_model",
+                "parakeet_cpp_runtime_dir",
+                "parakeet_cpp_backend",
+                "parakeet_cpp_decoder",
+                "parakeet_cpp_word_timestamps",
                 "remote_asr_url",
                 "hub",
             )
@@ -753,6 +758,11 @@ def main():
     config["asr"].setdefault("sherpa_onnx_provider", "auto")
     config["asr"].setdefault("sherpa_onnx_num_threads", 2)
     config["asr"].setdefault("sherpa_onnx_decoding_method", "greedy_search")
+    config["asr"].setdefault("parakeet_cpp_model", "")
+    config["asr"].setdefault("parakeet_cpp_runtime_dir", "")
+    config["asr"].setdefault("parakeet_cpp_backend", "auto")
+    config["asr"].setdefault("parakeet_cpp_decoder", "auto")
+    config["asr"].setdefault("parakeet_cpp_word_timestamps", True)
     saved = load_settings(config)
     migrate_funasr_settings(saved)
 
@@ -844,6 +854,11 @@ def main():
             startup_model_key = saved.get(
                 "sherpa_onnx_model",
                 config["asr"].get("sherpa_onnx_model", ""),
+            )
+        elif current_engine == "parakeet-cpp":
+            startup_model_key = saved.get(
+                "parakeet_cpp_model",
+                config["asr"].get("parakeet_cpp_model", ""),
             )
         else:
             startup_model_key = saved.get("whisper_model_size", config["asr"]["model_size"])

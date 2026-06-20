@@ -6,6 +6,7 @@ from typing import Any
 from model_manager import (
     DEFAULT_FIRERED_VAD_MODEL,
     DEFAULT_FUNASR_MODEL,
+    DEFAULT_PARAKEET_CPP_MODEL,
     migrate_funasr_settings,
     normalize_funasr_model_key,
 )
@@ -84,6 +85,20 @@ def normalize_settings(config: dict[str, Any], saved: dict | None = None) -> dic
     settings.setdefault(
         "sherpa_onnx_tail_padding_seconds",
         asr.get("sherpa_onnx_tail_padding_seconds", 0.5),
+    )
+    settings.setdefault(
+        "parakeet_cpp_model",
+        asr.get("parakeet_cpp_model", DEFAULT_PARAKEET_CPP_MODEL),
+    )
+    settings.setdefault(
+        "parakeet_cpp_runtime_dir",
+        asr.get("parakeet_cpp_runtime_dir", ""),
+    )
+    settings.setdefault("parakeet_cpp_backend", asr.get("parakeet_cpp_backend", "auto"))
+    settings.setdefault("parakeet_cpp_decoder", asr.get("parakeet_cpp_decoder", "auto"))
+    settings.setdefault(
+        "parakeet_cpp_word_timestamps",
+        asr.get("parakeet_cpp_word_timestamps", True),
     )
     settings.setdefault("asr_device", asr.get("device", "cuda"))
     settings.setdefault(

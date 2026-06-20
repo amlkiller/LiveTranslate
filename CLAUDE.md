@@ -36,6 +36,7 @@ main.py (LiveTranslateApp)
   |-- asr_anime_whisper.py Anime-Whisper backend (litagin/anime-whisper, ja anime/galgame)
   |-- asr_crispasr.py     CrispASR ggml runtime backend (GGUF/bin single-file models)
   |-- asr_sherpa_onnx.py  sherpa-onnx OfflineRecognizer/OnlineRecognizer backend (local ONNX model dirs)
+  |-- asr_parakeet_cpp.py parakeet.cpp C API backend (local GGUF model + native runtime)
   |-- translator.py        OpenAI-compatible API client, streaming, JSON schema, context history
   |-- subtitle_overlay.py  PyQt6 transparent overlay (2-row header: controls + model/lang combos)
   |-- subtitle_window.py   Standalone subtitle window for OBS capture (outlined text, animations)
@@ -177,6 +178,10 @@ Continuous speech is processed incrementally to reduce latency (enabled by `incr
 - ASR engine lifecycle: the GUI process never instantiates `ASREngine`, `FunASREngine`, or `AnimeWhisperEngine` directly. It owns an `ASRClient`; each worker process owns one concrete backend/model. Engine/model/device changes shut down the current worker first, then start a new worker. On target load failure, the saved previous worker config is used to restore ASR.
 - CrispASR is treated as a ggml C++ runtime hub with GGUF/bin single-file weights. The GUI process never imports `crispasr`; `asr_crispasr.py` imports the Python binding only inside the ASR worker process and adapts results to the common ASR dict.
 - sherpa-onnx is treated as a local ONNX ASR runtime. The GUI process never imports `sherpa_onnx`; `asr_sherpa_onnx.py` imports it lazily inside the ASR worker after any CUDA device mapping is finalized. Offline families use `OfflineRecognizer`; `online_transducer` uses `OnlineRecognizer` as a VAD segment wrapper, not true partial streaming.
+- parakeet.cpp is treated as a worker-only native C API backend. The GUI process never loads the parakeet DLL; `asr_parakeet_cpp.py` uses `ctypes` only inside the ASR worker, loads one local `.gguf` once, and returns the common ASR dict.
+- parakeet.cpp model scanning only accepts known official GGUF filename prefixes or explicit sidecar metadata (`family=parakeet_cpp` / `architecture=parakeet`). CrispASR scanning excludes recognized parakeet GGUF files to avoid `.gguf` list pollution.
+- parakeet.cpp C API returned strings must be released with `parakeet_capi_free_string()`, and loaded contexts must be released with `parakeet_capi_free()`.
+- parakeet.cpp runtime DLL paths are added only inside the worker with `os.add_dll_directory()`. CUDA runtime may require the matching `cudart-parakeet-bin-win-cuda-x64.zip` DLLs beside the parakeet runtime.
 - CrispASR packaging has two parts that must stay aligned: `pyproject.toml` installs the pure-Python binding from the CrispASR release tag via `uv sync`, while `install.ps1` and the portable `bootstrap.ps1` download the matching prebuilt Windows `libcrispasr` DLL runtime from GitHub Releases. Do not replace this with plain `crispasr` from PyPI; that package name may not exist in the configured registry and the binding alone does not include `crispasr.dll`.
 - CrispASR native runtime install prefers `libcrispasr-windows-x86_64-cuda.tar.gz` on NVIDIA systems and falls back to `libcrispasr-windows-x86_64.tar.gz`. DLLs are copied next to the installed `crispasr` package so the worker can load them without a global PATH edit.
 - Whisper (ctranslate2) only accepts `device="cuda"` not `"cuda:0"`; device index passed via `device_index` param. Parsed from combo text like `"cuda:0 (RTX 4090)"` in `_switch_asr_engine`

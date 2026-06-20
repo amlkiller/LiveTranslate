@@ -21,7 +21,7 @@ Works with any system audio — videos, livestreams, voice chat. No player modif
 ## Features
 
 - **Real-time pipeline**: System audio → VAD → ASR → LLM translation → overlay
-- **Multiple ASR engines**: faster-whisper, SenseVoice, FunASR Nano, Anime-Whisper, CrispASR, sherpa-onnx, Remote Whisper
+- **Multiple ASR engines**: faster-whisper, SenseVoice, FunASR Nano, Anime-Whisper, CrispASR, sherpa-onnx, parakeet.cpp, Remote Whisper
 - **Remote ASR**: offload speech recognition to a GPU machine over HTTP — see [REMOTE_ASR.md](REMOTE_ASR.md)
 - **Any OpenAI-compatible API**: DeepSeek, Grok, Qwen, GPT, Ollama, vLLM, etc.
 - **Streaming translation display**: Real-time character-by-character translation output
@@ -128,6 +128,26 @@ powershell -ExecutionPolicy Bypass -File install.ps1 -SherpaOnnxRuntime cuda12
 
 Download sherpa-onnx ASR model archives from the official sherpa-onnx releases, extract them anywhere under `models/`, then open Settings → VAD/ASR, choose `sherpa-onnx (ONNX)`, click Refresh, and select the local model directory. Online transducer scans accept `encoder.onnx`/`decoder.onnx`/`joiner.onnx` and int8 variants such as `encoder.int8.onnx`/`decoder.int8.onnx`/`joiner.int8.onnx`. PR #3671 Nemotron packages are published with names like `sherpa-onnx-nemotron-3.5-asr-streaming-0.6b-560ms-int8-2026-06-11`; unofficial snapshots must still have ONNX files accepted by the installed sherpa-onnx/ONNX Runtime version. The `onnx-community/nemotron-3.5-asr-streaming-0.6b-onnx-int4` layout is not treated as a sherpa-onnx model in this path.
 
+## parakeet.cpp Models
+
+parakeet.cpp is optional and is not downloaded during first launch. It uses local GGUF models plus a native parakeet.cpp runtime. The first integration uses LiveTranslate's existing VAD segments and ASR worker process; parakeet.cpp streaming EOU is not connected yet.
+
+Optional installer commands:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File install.ps1 -InstallParakeetCpp -ParakeetCppBackend cpu
+powershell -ExecutionPolicy Bypass -File install.ps1 -DownloadParakeetCppModel -ParakeetCppModel tdt_ctc-110m-q4_k
+```
+
+Manual layout:
+
+```text
+models/parakeet.cpp/runtime/v0.3.2/<cpu|cuda|vulkan>/
+models/parakeet.cpp/models/tdt_ctc-110m-q4_k.gguf
+```
+
+Then open Settings → VAD/ASR, choose `parakeet.cpp (GGUF)`, click Refresh for both model and runtime, and select them. CUDA runtime may require the matching `cudart-parakeet-bin-win-cuda-x64.zip` asset next to the runtime DLLs.
+
 ## Translation API
 
 Settings → Translation tab:
@@ -160,6 +180,7 @@ main.py                 Entry point & pipeline
 ├── asr_anime_whisper.py Anime-Whisper backend (ja anime/galgame)
 ├── asr_crispasr.py     CrispASR ggml runtime backend
 ├── asr_sherpa_onnx.py  sherpa-onnx OfflineRecognizer/OnlineRecognizer backend
+├── asr_parakeet_cpp.py parakeet.cpp C API GGUF backend
 ├── asr_remote.py        Remote Whisper client (→ asr_server.py, see REMOTE_ASR.md)
 ├── translator.py       OpenAI-compatible client (streaming, JSON schema, context)
 ├── model_manager.py    Model download & cache
@@ -176,6 +197,7 @@ main.py                 Entry point & pipeline
 - [Anime-Whisper](https://huggingface.co/litagin/anime-whisper) — Japanese anime/galgame ASR
 - CrispASR — ggml C++ ASR runtime hub with GGUF/bin single-file models, used through its Python binding in the ASR worker
 - [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx) — ONNX ASR runtime used through `OfflineRecognizer` and segment-wrapped `OnlineRecognizer`
+- [parakeet.cpp](https://github.com/mudler/parakeet.cpp) — NVIDIA NeMo Parakeet GGUF inference through the C API in the ASR worker
 - [Silero VAD](https://github.com/snakers4/silero-vad) — Voice activity detection
 - [FireRedVAD](https://github.com/FireRedTeam/FireRedVAD) — Optional streaming VAD confidence backend
 

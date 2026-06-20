@@ -8,7 +8,18 @@ param(
     [switch]$DownloadFireRedVAD,
 
     [ValidateSet("ms", "hf")]
-    [string]$FireRedVADHub = "ms"
+    [string]$FireRedVADHub = "ms",
+
+    [switch]$InstallParakeetCpp,
+
+    [ValidateSet("cpu", "cuda", "vulkan")]
+    [string]$ParakeetCppBackend = "cpu",
+
+    [string]$ParakeetCppVersion = "v0.3.2",
+
+    [switch]$DownloadParakeetCppModel,
+
+    [string]$ParakeetCppModel = "tdt_ctc-110m-q4_k"
 )
 
 $ErrorActionPreference = "Stop"
@@ -145,6 +156,82 @@ function Download-FireRedVADModel {
     } catch {
         Write-Warn "FireRedVAD model download failed: $($_.Exception.Message)"
         Write-Warn "You can download it later and place it under models\FireRedVAD"
+    }
+}
+
+function Install-ParakeetCppRuntime {
+    param(
+        [string]$PythonExe,
+        [string]$Backend,
+        [string]$Version
+    )
+
+    Write-Step "Installing parakeet.cpp runtime ($Backend, $Version)..."
+    $versionNoV = $Version.TrimStart("v")
+    $asset = "parakeet-$Version-lib-win-$Backend-x64.zip"
+    $url = "https://github.com/mudler/parakeet.cpp/releases/download/$Version/$asset"
+    $target = Join-Path $ProjectDir "models\parakeet.cpp\runtime\$Version\$Backend"
+    $tmpDir = Join-Path $env:TEMP "livetranslate-parakeet-$Backend"
+    $archive = Join-Path $tmpDir $asset
+    try {
+        if (Test-Path $tmpDir) { Remove-Item -Recurse -Force $tmpDir }
+        New-Item -ItemType Directory -Force -Path $tmpDir | Out-Null
+        New-Item -ItemType Directory -Force -Path $target | Out-Null
+
+        Write-Host "  Downloading $asset" -ForegroundColor Gray
+        Invoke-WebRequest -Uri $url -OutFile $archive
+        Expand-Archive -Path $archive -DestinationPath $tmpDir -Force
+
+        $dll = Get-ChildItem -Path $tmpDir -Recurse -Filter "*.dll" |
+            Where-Object { $_.Name -in @("parakeet.dll", "libparakeet.dll", "parakeet_capi.dll", "libparakeet_capi.dll") } |
+            Select-Object -First 1
+        if (-not $dll) {
+            throw "parakeet C API DLL not found in $asset"
+        }
+
+        Copy-Item -Path (Join-Path $tmpDir "*") -Destination $target -Recurse -Force
+
+        if ($Backend -eq "cuda") {
+            $cudartAsset = "cudart-parakeet-bin-win-cuda-x64.zip"
+            $cudartUrl = "https://github.com/mudler/parakeet.cpp/releases/download/$Version/$cudartAsset"
+            $cudartArchive = Join-Path $tmpDir $cudartAsset
+            Write-Host "  Downloading $cudartAsset" -ForegroundColor Gray
+            Invoke-WebRequest -Uri $cudartUrl -OutFile $cudartArchive
+            Expand-Archive -Path $cudartArchive -DestinationPath $target -Force
+        }
+
+        $test = & $PythonExe -c "import ctypes, pathlib; root=pathlib.Path(r'$target'); names=('parakeet.dll','libparakeet.dll','parakeet_capi.dll','libparakeet_capi.dll'); dll=next((p for n in names for p in root.rglob(n)), None); assert dll, 'DLL not found'; lib=ctypes.CDLL(str(dll)); lib.parakeet_capi_abi_version.restype=ctypes.c_int; print(lib.parakeet_capi_abi_version())" 2>&1
+        if ($LASTEXITCODE -ne 0) {
+            throw "Runtime smoke test failed: $test"
+        }
+        Write-Ok "parakeet.cpp runtime ready: models\parakeet.cpp\runtime\$Version\$Backend (ABI $($test.Trim()))"
+    } catch {
+        Write-Warn "parakeet.cpp runtime installation failed: $($_.Exception.Message)"
+        Write-Warn "You can manually extract $asset to models\parakeet.cpp\runtime\$Version\$Backend"
+    }
+}
+
+function Download-ParakeetCppModel {
+    param(
+        [string]$PythonExe,
+        [string]$ModelName
+    )
+
+    Write-Step "Downloading parakeet.cpp GGUF model ($ModelName)..."
+    $target = Join-Path $ProjectDir "models\parakeet.cpp\models"
+    New-Item -ItemType Directory -Force -Path $target | Out-Null
+    $fileName = if ($ModelName.EndsWith(".gguf")) { $ModelName } else { "$ModelName.gguf" }
+    try {
+        & $PythonExe -c "from huggingface_hub import hf_hub_download; hf_hub_download(repo_id='mudler/parakeet-cpp-gguf', filename=r'$fileName', local_dir=r'models/parakeet.cpp/models')"
+        if ($LASTEXITCODE -ne 0) { throw "HuggingFace model download command failed" }
+        $modelPath = Join-Path $target $fileName
+        if (-not (Test-Path $modelPath)) {
+            throw "Downloaded model file not found: $modelPath"
+        }
+        Write-Ok "parakeet.cpp model ready: models\parakeet.cpp\models\$fileName"
+    } catch {
+        Write-Warn "parakeet.cpp model download failed: $($_.Exception.Message)"
+        Write-Warn "Download a GGUF from mudler/parakeet-cpp-gguf and place it under models\parakeet.cpp\models"
     }
 }
 
@@ -480,6 +567,15 @@ if ($LASTEXITCODE -ne 0) {
     Write-Warn "FunASR installation failed (non-critical, SenseVoice engine may not work)"
 } else {
     Write-Ok "FunASR installed"
+}
+
+# ── Step 10: Optional parakeet.cpp runtime/model ──
+if ($InstallParakeetCpp) {
+    Install-ParakeetCppRuntime -PythonExe $Python -Backend $ParakeetCppBackend -Version $ParakeetCppVersion
+}
+
+if ($DownloadParakeetCppModel) {
+    Download-ParakeetCppModel -PythonExe $Python -ModelName $ParakeetCppModel
 }
 
 # ── Done ──

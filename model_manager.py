@@ -109,6 +109,7 @@ FUNASR_MODEL_PROFILES = {
 DEFAULT_FUNASR_MODEL = "sensevoice-small"
 DEFAULT_SHERPA_ONNX_MODEL = ""
 DEFAULT_FIRERED_VAD_MODEL = ""
+DEFAULT_PARAKEET_CPP_MODEL = ""
 
 FUNASR_LEGACY_ENGINE_ALIASES = {
     "sensevoice": "sensevoice-small",
@@ -144,11 +145,32 @@ ASR_DISPLAY_NAMES = {
     "anime-whisper": "Anime-Whisper",
     "crispasr": "CrispASR",
     "sherpa-onnx": "sherpa-onnx",
+    "parakeet-cpp": "parakeet.cpp",
     "remote-whisper": "Remote-Whisper",
 }
 
 _CRISPASR_EXTS = {".gguf", ".bin"}
 _CRISPASR_MIN_BYTES = 1_000_000
+_PARAKEET_CPP_MIN_BYTES = 1_000_000
+_PARAKEET_CPP_MODEL_PREFIXES = (
+    "tdt_ctc-110m",
+    "tdt_ctc-1.1b",
+    "tdt-0.6b-v2",
+    "tdt-0.6b-v3",
+    "tdt-1.1b",
+    "ctc-0.6b",
+    "ctc-1.1b",
+    "rnnt-0.6b",
+    "rnnt-1.1b",
+    "realtime_eou_120m-v1",
+    "nemotron-3.5-asr-streaming-0.6b",
+)
+_PARAKEET_CPP_LIBRARY_NAMES = (
+    "parakeet.dll",
+    "libparakeet.dll",
+    "parakeet_capi.dll",
+    "libparakeet_capi.dll",
+)
 
 _MODEL_SIZE_BYTES = {
     "silero-vad": 2_000_000,
@@ -230,6 +252,288 @@ def funasr_model_id(model_key: str | None, hub: str = "ms") -> str:
     return profile["huggingface_id"] if hub == "hf" else profile["modelscope_id"]
 
 
+def _custom_parakeet_cpp_path(value) -> Path | None:
+    if not value:
+        return None
+    path = Path(str(value)).expanduser()
+    if not path.is_absolute():
+        path = APP_DIR / path
+    return path
+
+
+def _read_parakeet_cpp_sidecar(path: Path) -> dict:
+    candidates = [
+        path.with_suffix(path.suffix + ".json"),
+        path.with_suffix(".json"),
+        path.parent / "parakeet_cpp_model.json",
+    ]
+    for metadata_path in candidates:
+        if not metadata_path.is_file():
+            continue
+        try:
+            data = json.loads(metadata_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            log.warning(f"Invalid parakeet.cpp metadata: {metadata_path}: {exc}")
+            return {}
+        return data if isinstance(data, dict) else {}
+    return {}
+
+
+def _parakeet_cpp_name_hint(path: Path) -> dict | None:
+    name = path.name.lower()
+    stem = path.stem.lower()
+    if not any(stem.startswith(prefix) for prefix in _PARAKEET_CPP_MODEL_PREFIXES):
+        return None
+    tags = []
+    if "nemotron" in stem:
+        tags.append("multilingual")
+    if "realtime_eou" in stem or "streaming" in stem:
+        tags.append("streaming/eou")
+    return {
+        "display_name": stem.replace("_", " "),
+        "decoder": "auto",
+        "language": "auto" if "nemotron" in stem else "en",
+        "tags": tags,
+        "filename": name,
+    }
+
+
+def detect_parakeet_cpp_model_file(path) -> dict | None:
+    """Return normalized parakeet.cpp metadata for a known GGUF model file."""
+    if not path:
+        return None
+    path = Path(path)
+    if not path.is_file() or path.suffix.lower() != ".gguf":
+        return None
+    try:
+        if path.stat().st_size < _PARAKEET_CPP_MIN_BYTES:
+            return None
+        path = path.resolve()
+    except OSError:
+        return None
+
+    metadata = _read_parakeet_cpp_sidecar(path)
+    family = str(metadata.get("family") or "").strip().lower().replace("-", "_")
+    architecture = str(
+        metadata.get("architecture")
+        or metadata.get("gguf.architecture")
+        or metadata.get("gguf_architecture")
+        or ""
+    ).strip().lower()
+    model_file = metadata.get("model_file")
+    if model_file:
+        candidate = Path(str(model_file))
+        if not candidate.is_absolute():
+            candidate = path.parent / candidate
+        try:
+            if candidate.resolve() != path:
+                return None
+        except OSError:
+            return None
+
+    hint = _parakeet_cpp_name_hint(path)
+    if family in ("parakeet_cpp", "parakeet.cpp") or architecture == "parakeet":
+        display = metadata.get("display_name") or metadata.get("name")
+        return {
+            "path": str(path),
+            "display_name": str(display).strip() if display else (hint or {}) .get("display_name", path.name),
+            "decoder": str(metadata.get("decoder") or (hint or {}).get("decoder") or "auto"),
+            "language": str(metadata.get("language") or (hint or {}).get("language") or "auto"),
+            "tags": metadata.get("tags") if isinstance(metadata.get("tags"), list) else (hint or {}).get("tags", []),
+        }
+    if hint:
+        return {"path": str(path), **hint}
+    return None
+
+
+def is_parakeet_cpp_model_file(path) -> bool:
+    return detect_parakeet_cpp_model_file(path) is not None
+
+
+def resolve_custom_parakeet_cpp_model(value) -> str | None:
+    path = _custom_parakeet_cpp_path(value)
+    if path and is_parakeet_cpp_model_file(path):
+        return str(path.resolve())
+    return None
+
+
+def list_local_parakeet_cpp_models() -> list[dict]:
+    """Scan ./models for recognizable parakeet.cpp GGUF model files."""
+    if not MODELS_DIR.exists():
+        return []
+
+    entries = []
+    name_counts = {}
+    seen = set()
+    try:
+        files = list(MODELS_DIR.rglob("*.gguf"))
+    except (OSError, PermissionError):
+        return []
+
+    for path in files:
+        info = detect_parakeet_cpp_model_file(path)
+        if not info:
+            continue
+        identity = info["path"]
+        if identity in seen:
+            continue
+        seen.add(identity)
+        name = str(info.get("display_name") or path.name)
+        tags = info.get("tags") or []
+        if tags:
+            name = f"{name} [{' / '.join(str(tag) for tag in tags)}]"
+        name_counts[name] = name_counts.get(name, 0) + 1
+        if name_counts[name] > 1:
+            name = f"{path.stem} ({path.parent.name}){path.suffix}"
+        entries.append(
+            {
+                "name": name,
+                "path": identity,
+                "decoder": info.get("decoder", "auto"),
+                "language": info.get("language", "auto"),
+                "info": info,
+            }
+        )
+
+    entries.sort(key=lambda item: item["name"].lower())
+    return entries
+
+
+def get_parakeet_cpp_model_path(value) -> str | None:
+    return resolve_custom_parakeet_cpp_model(value)
+
+
+def local_parakeet_cpp_display_name(path) -> str | None:
+    resolved = resolve_custom_parakeet_cpp_model(path)
+    if not resolved:
+        return None
+    for item in list_local_parakeet_cpp_models():
+        if item["path"] == resolved:
+            return item["name"]
+    info = detect_parakeet_cpp_model_file(resolved)
+    return info["display_name"] if info else Path(resolved).name
+
+
+def _custom_parakeet_cpp_runtime_path(value) -> Path | None:
+    if not value:
+        return None
+    path = Path(str(value)).expanduser()
+    if not path.is_absolute():
+        path = APP_DIR / path
+    return path
+
+
+def _find_parakeet_cpp_library(path: Path) -> Path | None:
+    for name in _PARAKEET_CPP_LIBRARY_NAMES:
+        candidate = path / name
+        if candidate.is_file():
+            return candidate
+    for name in _PARAKEET_CPP_LIBRARY_NAMES:
+        matches = list(path.rglob(name))
+        if matches:
+            return matches[0]
+    return None
+
+
+def _parakeet_cpp_runtime_backend_hint(path: Path) -> str:
+    lowered = " ".join(part.lower() for part in path.parts)
+    if "cuda" in lowered:
+        return "cuda"
+    if "vulkan" in lowered:
+        return "vulkan"
+    if "cpu" in lowered:
+        return "cpu"
+    return "unknown"
+
+
+def detect_parakeet_cpp_runtime_dir(path) -> dict | None:
+    if not path:
+        return None
+    path = Path(path)
+    if not path.is_dir():
+        return None
+    try:
+        path = path.resolve()
+    except OSError:
+        return None
+    library = _find_parakeet_cpp_library(path)
+    if not library:
+        return None
+    backend = _parakeet_cpp_runtime_backend_hint(path)
+    missing = []
+    if backend == "cuda":
+        has_cudart = any(path.rglob("cudart*.dll"))
+        if not has_cudart:
+            missing.append("cudart*.dll")
+    return {
+        "path": str(path),
+        "library": str(library),
+        "backend": backend,
+        "display_name": parakeet_cpp_runtime_display_name(path),
+        "missing_dependencies": missing,
+    }
+
+
+def resolve_parakeet_cpp_runtime_dir(value, backend: str = "auto") -> str | None:
+    path = _custom_parakeet_cpp_runtime_path(value)
+    if path:
+        info = detect_parakeet_cpp_runtime_dir(path)
+        if info and (
+            backend in ("", "auto")
+            or info["backend"] in ("unknown", backend)
+        ):
+            return info["path"]
+    return None
+
+
+def list_local_parakeet_cpp_runtimes() -> list[dict]:
+    if not MODELS_DIR.exists():
+        return []
+
+    runtime_root = MODELS_DIR / "parakeet.cpp" / "runtime"
+    candidates = []
+    try:
+        if any((MODELS_DIR / name).is_file() for name in _PARAKEET_CPP_LIBRARY_NAMES):
+            candidates.append(MODELS_DIR)
+        candidates.extend(
+            path
+            for path in MODELS_DIR.iterdir()
+            if path.is_dir() and "parakeet" in path.name.lower()
+        )
+        if runtime_root.exists():
+            candidates.append(runtime_root)
+            candidates.extend(path for path in runtime_root.rglob("*") if path.is_dir())
+    except (OSError, PermissionError):
+        return []
+
+    entries = []
+    seen = set()
+    for path in candidates:
+        info = detect_parakeet_cpp_runtime_dir(path)
+        if not info or info["path"] in seen:
+            continue
+        seen.add(info["path"])
+        entries.append(
+            {
+                "name": info["display_name"],
+                "path": info["path"],
+                "backend": info["backend"],
+                "info": info,
+            }
+        )
+    entries.sort(key=lambda item: item["name"].lower())
+    return entries
+
+
+def parakeet_cpp_runtime_display_name(path) -> str:
+    path = Path(path)
+    backend = _parakeet_cpp_runtime_backend_hint(path)
+    name = path.name
+    if backend != "unknown" and backend not in name.lower():
+        return f"{name} [{backend}]"
+    return name
+
+
 def is_crispasr_model_file(path) -> bool:
     if not path:
         return False
@@ -239,6 +543,7 @@ def is_crispasr_model_file(path) -> bool:
             path.is_file()
             and path.suffix.lower() in _CRISPASR_EXTS
             and path.stat().st_size >= _CRISPASR_MIN_BYTES
+            and not is_parakeet_cpp_model_file(path)
         )
     except OSError:
         return False
@@ -938,6 +1243,8 @@ def is_asr_cached(engine_type, model_size="medium", hub="ms") -> bool:
         return resolve_custom_crispasr_model(model_size) is not None
     if engine_type == "sherpa-onnx":
         return get_sherpa_onnx_model_path(model_size) is not None
+    if engine_type == "parakeet-cpp":
+        return get_parakeet_cpp_model_path(model_size) is not None
     if engine_type == "funasr" or engine_type in FUNASR_LEGACY_ENGINE_ALIASES:
         model_key = (
             FUNASR_LEGACY_ENGINE_ALIASES[engine_type]
@@ -999,7 +1306,7 @@ def get_missing_models(engine, model_size, hub) -> list:
     if not is_asr_cached(engine, model_size, hub):
         if engine == "whisper" and model_size not in _WHISPER_SIZES:
             return missing
-        if engine in ("crispasr", "sherpa-onnx"):
+        if engine in ("crispasr", "sherpa-onnx", "parakeet-cpp"):
             return missing
         if engine == "funasr" or engine in FUNASR_LEGACY_ENGINE_ALIASES:
             model_key = (
@@ -1045,6 +1352,9 @@ def get_local_model_path(
     if engine_type == "sherpa-onnx":
         model_value = model_path_or_id if model_path_or_id is not None else funasr_model
         return get_sherpa_onnx_model_path(model_value)
+    if engine_type == "parakeet-cpp":
+        model_value = model_path_or_id if model_path_or_id is not None else funasr_model
+        return get_parakeet_cpp_model_path(model_value)
 
     if engine_type == "funasr" or engine_type in FUNASR_LEGACY_ENGINE_ALIASES:
         model_key = (
@@ -1239,6 +1549,12 @@ def get_cache_entries():
 
     for item in list_local_sherpa_onnx_models():
         entries.append((f"sherpa-onnx Local: {item['name']}", Path(item["path"])))
+
+    for item in list_local_parakeet_cpp_models():
+        entries.append((f"parakeet.cpp Local: {item['name']}", Path(item["path"])))
+
+    for item in list_local_parakeet_cpp_runtimes():
+        entries.append((f"parakeet.cpp Runtime: {item['name']}", Path(item["path"])))
 
     for item in list_local_firered_vad_models():
         entries.append((f"FireRedVAD Local: {item['name']}", Path(item["path"])))

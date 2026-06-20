@@ -21,7 +21,7 @@ Windows 实时音频翻译工具。捕获系统音频（WASAPI loopback）和可
 ## 功能特性
 
 - **实时翻译管线**：系统音频 → VAD → ASR → LLM 翻译 → 字幕显示
-- **多 ASR 引擎**：faster-whisper、SenseVoice、FunASR Nano、Anime-Whisper、CrispASR、sherpa-onnx、Remote Whisper
+- **多 ASR 引擎**：faster-whisper、SenseVoice、FunASR Nano、Anime-Whisper、CrispASR、sherpa-onnx、parakeet.cpp、Remote Whisper
 - **远程 ASR**：通过 HTTP 把语音识别放到 GPU 机器上跑 —— 见 [REMOTE_ASR.md](REMOTE_ASR.md)
 - **兼容任意 OpenAI 格式 API**：DeepSeek、Grok、Qwen、GPT、Ollama、vLLM 等
 - **流式翻译显示**：翻译结果逐字实时显示
@@ -128,6 +128,26 @@ powershell -ExecutionPolicy Bypass -File install.ps1 -SherpaOnnxRuntime cuda12
 
 从 sherpa-onnx 官方 releases 下载 ASR 模型压缩包，解压到 `models/` 下任意子目录；然后在 设置 → VAD/ASR 中选择 `sherpa-onnx (ONNX)`，点击刷新并选择本地模型目录。Online transducer 扫描支持 `encoder.onnx`/`decoder.onnx`/`joiner.onnx`，也支持 `encoder.int8.onnx`/`decoder.int8.onnx`/`joiner.int8.onnx`。PR #3671 对应的 Nemotron 包名类似 `sherpa-onnx-nemotron-3.5-asr-streaming-0.6b-560ms-int8-2026-06-11`；非官方 snapshot 的 ONNX 文件仍必须能被当前安装的 sherpa-onnx/ONNX Runtime 接受。`onnx-community/nemotron-3.5-asr-streaming-0.6b-onnx-int4` 这类结构不属于此 sherpa-onnx 路线。
 
+## parakeet.cpp 模型
+
+parakeet.cpp 是可选 ASR 后端，首次启动不会强制下载。它使用本地 GGUF 模型和 parakeet.cpp native runtime。当前第一阶段仍使用 LiveTranslate 现有 VAD 切段和 ASR worker，暂不接入 parakeet.cpp streaming EOU。
+
+可选安装命令：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File install.ps1 -InstallParakeetCpp -ParakeetCppBackend cpu
+powershell -ExecutionPolicy Bypass -File install.ps1 -DownloadParakeetCppModel -ParakeetCppModel tdt_ctc-110m-q4_k
+```
+
+手动放置路径：
+
+```text
+models/parakeet.cpp/runtime/v0.3.2/<cpu|cuda|vulkan>/
+models/parakeet.cpp/models/tdt_ctc-110m-q4_k.gguf
+```
+
+然后在 设置 → VAD/ASR 中选择 `parakeet.cpp (GGUF)`，分别刷新并选择本地 GGUF 模型和 runtime。CUDA runtime 可能需要把匹配的 `cudart-parakeet-bin-win-cuda-x64.zip` 一并解压到 runtime DLL 附近。
+
 ## 配置翻译 API
 
 设置 → 翻译标签页：
@@ -160,6 +180,7 @@ main.py                 主入口，管线编排
 ├── asr_anime_whisper.py Anime-Whisper 后端 (日语动画/Galgame)
 ├── asr_crispasr.py     CrispASR ggml runtime 后端
 ├── asr_sherpa_onnx.py  sherpa-onnx OfflineRecognizer/OnlineRecognizer 后端
+├── asr_parakeet_cpp.py parakeet.cpp C API GGUF 后端
 ├── asr_remote.py        远程 Whisper 客户端 (→ asr_server.py, 见 REMOTE_ASR.md)
 ├── translator.py       OpenAI 兼容翻译客户端 (流式/JSON/上下文)
 ├── model_manager.py    模型下载与缓存管理
@@ -176,6 +197,7 @@ main.py                 主入口，管线编排
 - [Anime-Whisper](https://huggingface.co/litagin/anime-whisper) — 日语动画/Galgame 专用 ASR
 - CrispASR — ggml C++ ASR runtime hub，使用 GGUF/bin 单文件模型，LiveTranslate 通过 ASR worker 内的 Python binding 调用
 - [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx) — 通过 `OfflineRecognizer` 和 segment-wrapper `OnlineRecognizer` 调用的 ONNX ASR runtime
+- [parakeet.cpp](https://github.com/mudler/parakeet.cpp) — 通过 ASR worker 内 C API 调用的 NVIDIA NeMo Parakeet GGUF 推理后端
 - [Silero VAD](https://github.com/snakers4/silero-vad) — 语音活动检测
 - [FireRedVAD](https://github.com/FireRedTeam/FireRedVAD) — 可选 streaming VAD confidence 后端
 

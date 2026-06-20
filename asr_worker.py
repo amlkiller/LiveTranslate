@@ -177,6 +177,18 @@ def _load_engine(config: dict):
                 engine = SherpaOnnxEngine(provider="cpu", **kwargs)
             else:
                 raise
+    elif engine_type == "parakeet-cpp":
+        from asr_parakeet_cpp import ParakeetCppEngine
+
+        engine = ParakeetCppEngine(
+            model_path=config["parakeet_cpp_model_path"],
+            runtime_dir=config["parakeet_cpp_runtime_dir"],
+            backend=config.get("parakeet_cpp_backend", "auto"),
+            decoder=config.get("parakeet_cpp_decoder", "auto"),
+            device=device,
+            language=language,
+            word_timestamps=config.get("parakeet_cpp_word_timestamps", True),
+        )
     else:
         from asr_engine import ASREngine
 
