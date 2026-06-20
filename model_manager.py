@@ -771,21 +771,13 @@ def _sherpa_family_hint(path: Path, metadata: dict) -> str | None:
             "sense_voice": "sense_voice",
             "paraformer": "paraformer",
             "moonshine": "moonshine",
+            "nemo_ctc": "nemo_ctc",
+            "nemo-ctc": "nemo_ctc",
             "whisper": "whisper",
             "online_transducer": "online_transducer",
             "online-transducer": "online_transducer",
         }
         return aliases.get(family)
-
-    name = path.name.lower().replace("-", "_")
-    if "sense_voice" in name or "sensevoice" in name:
-        return "sense_voice"
-    if "paraformer" in name:
-        return "paraformer"
-    if "moonshine" in name:
-        return "moonshine"
-    if name.startswith("sherpa_onnx_whisper") or name.startswith("sherpa-onnx-whisper"):
-        return "whisper"
     return None
 
 
@@ -816,6 +808,20 @@ def _is_sherpa_online_transducer_dir(path: Path, metadata: dict, family: str | N
     return False
 
 
+def _has_sherpa_prefix(path: Path) -> bool:
+    name = path.name.lower().replace("-", "_")
+    return name.startswith("sherpa_onnx")
+
+
+def _is_sherpa_single_model_dir(path: Path, metadata: dict) -> bool:
+    model = (
+        _sherpa_file(path, metadata, "model", "model_file")
+        or _first_glob_file(path, "model.int8.onnx", "model.onnx")
+    )
+    tokens = _sherpa_file(path, metadata, "tokens", "tokens_file", default="tokens.txt")
+    return bool(model and tokens)
+
+
 def detect_sherpa_onnx_model_dir(path) -> dict | None:
     """Return normalized sherpa-onnx model metadata when a directory is usable."""
     if not path:
@@ -835,6 +841,8 @@ def detect_sherpa_onnx_model_dir(path) -> dict | None:
     family = _sherpa_family_hint(path, metadata)
     if family is None and _is_sherpa_online_transducer_dir(path, metadata, family):
         family = "online_transducer"
+    if family is None and _has_sherpa_prefix(path) and _is_sherpa_single_model_dir(path, metadata):
+        family = "nemo_ctc"
     tokens_file = _sherpa_file(path, metadata, "tokens", "tokens_file", default="tokens.txt")
     sample_rate = int(metadata.get("sample_rate") or 16000)
     feature_dim = int(metadata.get("feature_dim") or 80)
@@ -859,7 +867,16 @@ def detect_sherpa_onnx_model_dir(path) -> dict | None:
     if family == "paraformer":
         model_file = (
             _sherpa_file(path, metadata, "model", "model_file", "paraformer")
-            or _first_glob_file(path, "model.onnx")
+            or _first_glob_file(path, "model.int8.onnx", "model.onnx")
+        )
+        if tokens_file and model_file:
+            return {**base, "tokens_file": tokens_file, "model_file": model_file}
+        return None
+
+    if family == "nemo_ctc":
+        model_file = (
+            _sherpa_file(path, metadata, "model", "model_file")
+            or _first_glob_file(path, "model.int8.onnx", "model.onnx")
         )
         if tokens_file and model_file:
             return {**base, "tokens_file": tokens_file, "model_file": model_file}

@@ -153,6 +153,23 @@ class SherpaOnnxEngine:
             )
             return
 
+        if self.family == "nemo_ctc":
+            factory = self._sherpa_onnx.OfflineRecognizer.from_nemo_ctc
+            self._recognizer = _call_factory(
+                factory,
+                self.provider,
+                {
+                    "model": self.model_info["model_file"],
+                    "tokens": self.model_info["tokens_file"],
+                    "num_threads": self.num_threads,
+                    "sample_rate": self.sample_rate,
+                    "feature_dim": int(self.model_info.get("feature_dim") or 80),
+                    "decoding_method": self.decoding_method,
+                    "debug": False,
+                },
+            )
+            return
+
         if self.family == "moonshine":
             factory = self._sherpa_onnx.OfflineRecognizer.from_moonshine
             self._recognizer = _call_factory(

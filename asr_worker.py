@@ -4,6 +4,7 @@ import inspect
 import logging
 import os
 import sys
+import sysconfig
 import traceback
 from typing import Any
 
@@ -90,6 +91,44 @@ def _is_sherpa_onnx_cuda_load_error(exc: Exception) -> bool:
     )
 
 
+def _prepend_process_path(path: str) -> bool:
+    if not path or not os.path.isdir(path):
+        return False
+    current = os.environ.get("PATH", "")
+    parts = [p for p in current.split(os.pathsep) if p]
+    normalized = {os.path.normcase(os.path.abspath(p)) for p in parts}
+    target = os.path.normcase(os.path.abspath(path))
+    if target in normalized:
+        return False
+    os.environ["PATH"] = path + (os.pathsep + current if current else "")
+    return True
+
+
+def _prepare_sherpa_onnx_cuda_runtime():
+    site_roots = []
+    for key in ("purelib", "platlib"):
+        path = sysconfig.get_paths().get(key)
+        if path and path not in site_roots:
+            site_roots.append(path)
+
+    added = []
+    for root in site_roots:
+        for relative in (
+            os.path.join("torch", "lib"),
+            "crispasr",
+            "ctranslate2",
+        ):
+            candidate = os.path.join(root, relative)
+            if _prepend_process_path(candidate):
+                added.append(candidate)
+
+    if added:
+        log.info(
+            "sherpa-onnx CUDA DLL search path updated: "
+            + "; ".join(added)
+        )
+
+
 def _load_engine(config: dict):
     from model_manager import MODELS_DIR, apply_cache_env
 
@@ -146,6 +185,7 @@ def _load_engine(config: dict):
         )
         if provider == "cuda":
             os.environ["CUDA_VISIBLE_DEVICES"] = str(device_index)
+            _prepare_sherpa_onnx_cuda_runtime()
 
         from asr_sherpa_onnx import SherpaOnnxEngine
 
@@ -259,6 +299,7 @@ def worker_main(conn, config: dict):
                     "engine_type": config.get("engine_type"),
                     "display_name": config.get("display_name"),
                     "device": config.get("device"),
+                    "runtime_provider": getattr(engine, "provider", None),
                 },
             )
         )
