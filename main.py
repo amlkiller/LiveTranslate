@@ -680,7 +680,12 @@ class LiveTranslateApp:
                 new_asr[0] = self._load_engine_client(worker_config)
             except Exception as e:
                 load_error[0] = str(e)
-                log.error(f"Failed to load ASR worker: {e}", exc_info=True)
+                # A remote server that is simply down is an expected, user-actionable
+                # condition, not a bug, so skip the noisy traceback for it.
+                expected = isinstance(e, ConnectionError)
+                log.error(
+                    f"Failed to load ASR worker: {e}", exc_info=not expected
+                )
                 if old_config:
                     try:
                         log.info("Restoring previous ASR worker after switch failure")
