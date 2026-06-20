@@ -18,12 +18,6 @@ from PyQt6.QtCore import (
     Qt, QPoint, QRect, pyqtSignal, pyqtSlot, pyqtProperty,
     QPropertyAnimation, QParallelAnimationGroup, QEasingCurve, QTimer,
 )
-
-# Win32 extended window style bits for OS-level mouse click-through (same
-# mechanism as the main overlay): a window with WS_EX_TRANSPARENT passes clicks
-# to whatever is behind it, so it never blocks the video player / browser.
-_GWL_EXSTYLE = -20
-_WS_EX_TRANSPARENT = 0x20
 from PyQt6.QtGui import (
     QColor,
     QFont,
@@ -35,6 +29,12 @@ from PyQt6.QtGui import (
     QPixmap,
 )
 from PyQt6.QtWidgets import QApplication, QWidget, QVBoxLayout
+
+# Win32 extended window style bits for OS-level mouse click-through (same
+# mechanism as the main overlay): a window with WS_EX_TRANSPARENT passes clicks
+# to whatever is behind it, so it never blocks the video player / browser.
+_GWL_EXSTYLE = -20
+_WS_EX_TRANSPARENT = 0x20
 
 
 def _resolve_image_path(path: str) -> str:
@@ -586,7 +586,7 @@ class SubtitleWindow(QWidget):
 
         self._apply_background()
         self._fit_height_animated()
-        self._set_click_through(self._click_through)
+        self.set_click_through(self._click_through)
 
     def _rebuild_text_widgets(self):
         for w in self._text_widgets:
@@ -694,7 +694,7 @@ class SubtitleWindow(QWidget):
 
         self._apply_background()
         self._refresh_display()
-        self._set_click_through(self._settings.get("click_through", False))
+        self.set_click_through(self._settings.get("click_through", False))
 
         # Reset auto-hide timer with new settings
         self._restart_auto_hide_timer()
@@ -756,7 +756,7 @@ class SubtitleWindow(QWidget):
             tw._animation_duration = old_dur
 
     # --- Click-through ---
-    def _set_click_through(self, enabled: bool):
+    def set_click_through(self, enabled: bool):
         self._click_through = bool(enabled)
         if self._click_through:
             if not self._ct_timer.isActive():

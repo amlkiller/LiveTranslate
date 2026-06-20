@@ -2016,6 +2016,28 @@ def main():
 
     menu.addAction(subwin_toggle_action)
 
+    # Quick toggle for subtitle-window click-through (mirrors the settings checkbox).
+    subwin_ct_action = QAction(t("subwin_click_through_tray"), checkable=True)
+    _subwin_init = panel.get_settings().get("subtitle_mode") or {}
+    subwin_ct_action.setChecked(bool(_subwin_init.get("click_through", False)))
+
+    def on_toggle_subwin_ct(checked):
+        subwin.set_click_through(checked)
+        settings = panel.get_settings()
+        sm = settings.get("subtitle_mode") or {}
+        sm["click_through"] = checked
+        settings["subtitle_mode"] = sm
+        panel._current_settings["subtitle_mode"] = sm
+        _save_settings(settings)
+        w = panel._subtitle_widget
+        w._click_through_check.blockSignals(True)
+        w._click_through_check.setChecked(checked)
+        w._click_through_check.blockSignals(False)
+        w._settings["click_through"] = checked
+
+    subwin_ct_action.toggled.connect(on_toggle_subwin_ct)
+    menu.addAction(subwin_ct_action)
+
     # Connect overlay subtitle button
     def _on_overlay_subtitle_toggle():
         subwin_toggle_action.setChecked(not subwin_toggle_action.isChecked())
@@ -2025,6 +2047,9 @@ def main():
     # Connect panel subtitle settings changes
     def _on_panel_subtitle_changed(s):
         subwin.apply_settings(s)
+        subwin_ct_action.blockSignals(True)
+        subwin_ct_action.setChecked(bool(s.get("click_through", False)))
+        subwin_ct_action.blockSignals(False)
 
     panel.subtitle_settings_changed.connect(_on_panel_subtitle_changed)
 

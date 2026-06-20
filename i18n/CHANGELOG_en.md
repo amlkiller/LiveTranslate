@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-06-20
+- New "Remote Whisper" ASR engine: offload speech recognition to a separate GPU machine (ships `asr_server.py` server), so a box without a GPU can still transcribe in real time
+- New "WebID / ID Verify" translation prompt preset, tuned for video identity-verification calls
+- ASR now runs in an isolated subprocess: the worker auto-restarts on crash/timeout and recycles when memory grows past a threshold, so a recognition failure no longer drags down the UI
+- Subtitle window mouse click-through (#28): a toggle in the subtitle settings plus a "Subtitle Click-through" tray shortcut; when on, clicks pass to the window behind (middle-click drag is disabled while on — turn it off to reposition)
+
 ## 2026-05-10
 - New "Export to file" menu: original / translation / combined formats, accessible from overlay right-click menu and tray menu
 - New "Transcript persistence" (enabled by default): each session creates 3 files under `transcripts/` (original / translation / combined), appended in real time per segment — no longer bounded by the 50-message overlay cap
