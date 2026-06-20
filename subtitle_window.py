@@ -8,6 +8,7 @@ Usage:
   - OBS: Window Capture → select "LiveTranslate Subtitle" → check "Allow Transparency"
 """
 
+import ctypes
 import time
 from pathlib import Path
 
@@ -17,6 +18,12 @@ from PyQt6.QtCore import (
     Qt, QPoint, QRect, pyqtSignal, pyqtSlot, pyqtProperty,
     QPropertyAnimation, QParallelAnimationGroup, QEasingCurve, QTimer,
 )
+
+# Win32 extended window style bits for OS-level mouse click-through (same
+# mechanism as the main overlay): a window with WS_EX_TRANSPARENT passes clicks
+# to whatever is behind it, so it never blocks the video player / browser.
+_GWL_EXSTYLE = -20
+_WS_EX_TRANSPARENT = 0x20
 from PyQt6.QtGui import (
     QColor,
     QFont,
@@ -53,6 +60,7 @@ DEFAULT_SUBTITLE_WIN_SETTINGS = {
     "auto_hide_timeout": 5,
     "auto_hide_animation": "fade",
     "auto_hide_duration": 300,
+    "click_through": False,
     "lines": [
         {
             "type": "original",
@@ -498,6 +506,12 @@ class SubtitleWindow(QWidget):
         self._sentences = []  # [(original, {lang: text, ...}), ...]
         self._drag_pos = None
         self._bg_pixmap = None
+        self._click_through = bool(self._settings.get("click_through", False))
+        # Qt clears the extended style on show/raise/flag changes, so re-assert it
+        # on a timer rather than only once.
+        self._ct_timer = QTimer(self)
+        self._ct_timer.setInterval(500)
+        self._ct_timer.timeout.connect(self._apply_click_through)
         # Auto-hide state
         self._auto_hide_timer = QTimer(self)
         self._auto_hide_timer.setSingleShot(True)
@@ -572,6 +586,7 @@ class SubtitleWindow(QWidget):
 
         self._apply_background()
         self._fit_height_animated()
+        self._set_click_through(self._click_through)
 
     def _rebuild_text_widgets(self):
         for w in self._text_widgets:
@@ -679,6 +694,7 @@ class SubtitleWindow(QWidget):
 
         self._apply_background()
         self._refresh_display()
+        self._set_click_through(self._settings.get("click_through", False))
 
         # Reset auto-hide timer with new settings
         self._restart_auto_hide_timer()
@@ -738,6 +754,37 @@ class SubtitleWindow(QWidget):
             tw.animate_in()
             tw._entry_animation = old_entry
             tw._animation_duration = old_dur
+
+    # --- Click-through ---
+    def _set_click_through(self, enabled: bool):
+        self._click_through = bool(enabled)
+        if self._click_through:
+            if not self._ct_timer.isActive():
+                self._ct_timer.start()
+        else:
+            self._ct_timer.stop()
+        self._apply_click_through()
+
+    def _apply_click_through(self):
+        try:
+            hwnd = int(self.winId())
+            style = ctypes.windll.user32.GetWindowLongW(hwnd, _GWL_EXSTYLE)
+            if self._click_through:
+                if not (style & _WS_EX_TRANSPARENT):
+                    ctypes.windll.user32.SetWindowLongW(
+                        hwnd, _GWL_EXSTYLE, style | _WS_EX_TRANSPARENT
+                    )
+            elif style & _WS_EX_TRANSPARENT:
+                ctypes.windll.user32.SetWindowLongW(
+                    hwnd, _GWL_EXSTYLE, style & ~_WS_EX_TRANSPARENT
+                )
+        except Exception:
+            pass
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        # Qt resets the extended style across hide/show, so re-assert it here.
+        self._apply_click_through()
 
     # --- Middle-click drag ---
     def mousePressEvent(self, event):
