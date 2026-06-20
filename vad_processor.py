@@ -26,7 +26,14 @@ class VADProcessor:
         self.min_speech_samples = int(min_speech_duration * sample_rate)
         self.max_speech_samples = int(max_speech_duration * sample_rate)
         self._chunk_duration = chunk_duration
-        self.mode = "silero"  # "silero", "energy", "disabled"
+        self.mode = "silero"  # "silero", "firered", "energy", "disabled"
+        self._firered = None
+        self._firered_model = ""
+        self._firered_use_gpu = False
+        self._firered_smooth_window_size = 5
+        self._firered_frame_aggregation = "max"
+        self._firered_failed_key = None
+        self._firered_missing_warned_for = None
 
         # Silero v5 ships its model inside the `silero-vad` PyPI package, so load
         # it from there (zero network). Only fall back to the torch.hub cache
@@ -86,6 +93,7 @@ class VADProcessor:
 
     def reset(self):
         self._reset()
+        self._reset_firered_adapter()
 
     def effective_silence_limit_chunks(self) -> int:
         return self._get_effective_silence_limit()
@@ -117,12 +125,34 @@ class VADProcessor:
             self._silence_limit = new_limit
 
     def update_settings(self, settings: dict):
+        old_mode = self.mode
+        old_firered_key = self._firered_config_key()
         if "vad_mode" in settings:
-            self.mode = settings["vad_mode"]
+            mode = settings["vad_mode"]
+            if mode in ("silero", "firered", "energy", "disabled"):
+                self.mode = mode
+            else:
+                log.warning(f"Unknown VAD mode '{mode}', keeping {self.mode}")
         if "vad_threshold" in settings:
             self.threshold = settings["vad_threshold"]
         if "energy_threshold" in settings:
             self.energy_threshold = settings["energy_threshold"]
+        if "firered_vad_model" in settings:
+            self._firered_model = str(settings.get("firered_vad_model") or "")
+        if "firered_vad_use_gpu" in settings:
+            self._firered_use_gpu = bool(settings.get("firered_vad_use_gpu"))
+        if "firered_vad_smooth_window_size" in settings:
+            try:
+                self._firered_smooth_window_size = max(
+                    1, int(settings.get("firered_vad_smooth_window_size") or 5)
+                )
+            except (TypeError, ValueError):
+                self._firered_smooth_window_size = 5
+        if "firered_vad_frame_aggregation" in settings:
+            agg = str(settings.get("firered_vad_frame_aggregation") or "max").lower()
+            self._firered_frame_aggregation = (
+                agg if agg in ("max", "latest", "mean") else "max"
+            )
         if "min_speech_duration" in settings:
             self.min_speech_samples = int(
                 settings["min_speech_duration"] * self.sample_rate
@@ -137,6 +167,10 @@ class VADProcessor:
             self._fixed_silence_dur = settings["silence_duration"]
             if self._silence_mode == "fixed":
                 self._silence_limit = self._seconds_to_chunks(self._fixed_silence_dur)
+        if old_firered_key != self._firered_config_key():
+            self._unload_firered_adapter()
+        elif old_mode != self.mode:
+            self._reset_firered_adapter()
         log.info(
             f"VAD settings updated: mode={self.mode}, threshold={self.threshold}, "
             f"silence={self._silence_mode} "
@@ -156,13 +190,97 @@ class VADProcessor:
         rms = float(np.sqrt(np.mean(audio_chunk**2)))
         return min(1.0, rms / (self.energy_threshold * 2))
 
+    def _firered_config_key(self, resolved_model: str | None = None) -> tuple:
+        return (
+            resolved_model or self._firered_model,
+            self._firered_use_gpu,
+            self._firered_smooth_window_size,
+            self._firered_frame_aggregation,
+        )
+
+    def _reset_firered_adapter(self):
+        if self._firered is not None:
+            self._firered.reset()
+
+    def _unload_firered_adapter(self):
+        if self._firered is not None:
+            self._firered.unload()
+        self._firered = None
+        self._firered_failed_key = None
+        self._firered_missing_warned_for = None
+
+    def _fallback_silero_confidence(self, audio_chunk: np.ndarray) -> float:
+        return self._silero_confidence(audio_chunk)
+
+    def _firered_confidence(self, audio_chunk: np.ndarray) -> float:
+        if not self._firered_model:
+            if self._firered_missing_warned_for != "":
+                log.warning(
+                    "FireRedVAD selected but no Stream-VAD model is configured; "
+                    "using Silero VAD confidence"
+                )
+                self._firered_missing_warned_for = ""
+            return self._fallback_silero_confidence(audio_chunk)
+
+        try:
+            from model_manager import get_firered_vad_model_path
+
+            model_path = get_firered_vad_model_path(self._firered_model)
+        except Exception as exc:
+            log.warning(f"FireRedVAD model path resolution failed: {exc}")
+            model_path = None
+
+        if not model_path:
+            if self._firered_missing_warned_for != self._firered_model:
+                log.warning(
+                    "FireRedVAD Stream-VAD model is unavailable: %s; "
+                    "using Silero VAD confidence",
+                    self._firered_model,
+                )
+                self._firered_missing_warned_for = self._firered_model
+            return self._fallback_silero_confidence(audio_chunk)
+
+        config_key = self._firered_config_key(model_path)
+        if self._firered is None:
+            if self._firered_failed_key == config_key:
+                return self._fallback_silero_confidence(audio_chunk)
+            try:
+                from vad_firered import FireRedVadAdapter
+
+                self._firered = FireRedVadAdapter(
+                    model_dir=model_path,
+                    threshold=self.threshold,
+                    smooth_window_size=self._firered_smooth_window_size,
+                    use_gpu=self._firered_use_gpu,
+                    frame_aggregation=self._firered_frame_aggregation,
+                )
+                self._firered_failed_key = None
+            except Exception as exc:
+                log.warning(f"FireRedVAD unavailable: {exc}")
+                self._firered_failed_key = config_key
+                self._firered = None
+                return self._fallback_silero_confidence(audio_chunk)
+
+        try:
+            return self._firered.confidence_for_chunk(audio_chunk)
+        except Exception as exc:
+            log.warning(f"FireRedVAD confidence failed, falling back to Silero: {exc}")
+            self._unload_firered_adapter()
+            self._firered_failed_key = config_key
+            return self._fallback_silero_confidence(audio_chunk)
+
     def _get_confidence(self, audio_chunk: np.ndarray) -> float:
         if self.mode == "silero":
             return self._silero_confidence(audio_chunk)
+        elif self.mode == "firered":
+            return self._firered_confidence(audio_chunk)
         elif self.mode == "energy":
             return self._energy_confidence(audio_chunk)
         else:  # disabled
             return 1.0
+
+    def _effective_threshold(self) -> float:
+        return self.threshold if self.mode in ("silero", "firered") else 0.5
 
     def _get_effective_silence_limit(self) -> int:
         """Progressive silence: accept shorter pauses as split points when buffer is long."""
@@ -179,7 +297,7 @@ class VADProcessor:
         confidence = self._get_confidence(audio_chunk)
         self.last_confidence = confidence
 
-        effective_threshold = self.threshold if self.mode == "silero" else 0.5
+        effective_threshold = self._effective_threshold()
         eff_silence_limit = self._get_effective_silence_limit()
 
         if confidence >= effective_threshold:
@@ -278,7 +396,7 @@ class VADProcessor:
         avg_conf = sum(smoothed[search_start:]) / max(1, n - search_start)
         dip_ratio = min_val / max(avg_conf, 1e-6)
 
-        effective_threshold = self.threshold if self.mode == "silero" else 0.5
+        effective_threshold = self._effective_threshold()
         if min_val < effective_threshold or dip_ratio < 0.8:
             log.debug(
                 f"Split point at chunk {min_idx}/{n}: "
@@ -341,7 +459,7 @@ class VADProcessor:
             return None
         # Speech density check: discard segments where most chunks are below threshold
         if len(self._confidence_history) >= 4:
-            effective_threshold = self.threshold if self.mode == "silero" else 0.5
+            effective_threshold = self._effective_threshold()
             voiced = sum(
                 1 for c in self._confidence_history if c >= effective_threshold
             )

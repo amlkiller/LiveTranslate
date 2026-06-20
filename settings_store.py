@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import Any
 
 from model_manager import (
+    DEFAULT_FIRERED_VAD_MODEL,
     DEFAULT_FUNASR_MODEL,
     migrate_funasr_settings,
     normalize_funasr_model_key,
@@ -25,6 +26,19 @@ def normalize_settings(config: dict[str, Any], saved: dict | None = None) -> dic
     settings.setdefault("vad_mode", "silero")
     settings.setdefault("vad_threshold", asr.get("vad_threshold", 0.5))
     settings.setdefault("energy_threshold", 0.02)
+    settings.setdefault(
+        "firered_vad_model",
+        asr.get("firered_vad_model", DEFAULT_FIRERED_VAD_MODEL),
+    )
+    settings.setdefault("firered_vad_use_gpu", asr.get("firered_vad_use_gpu", False))
+    settings.setdefault(
+        "firered_vad_smooth_window_size",
+        asr.get("firered_vad_smooth_window_size", 5),
+    )
+    settings.setdefault(
+        "firered_vad_frame_aggregation",
+        asr.get("firered_vad_frame_aggregation", "max"),
+    )
     settings.setdefault("min_speech_duration", asr.get("min_speech_duration", 1.0))
     settings.setdefault("max_speech_duration", asr.get("max_speech_duration", 8.0))
     settings.setdefault("silence_mode", "auto")

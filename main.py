@@ -1052,7 +1052,7 @@ def main():
         sm["click_through"] = checked
         settings["subtitle_mode"] = sm
         panel._current_settings["subtitle_mode"] = sm
-        _save_settings(settings)
+        save_settings(settings)
         w = panel._subtitle_widget
         w._click_through_check.blockSignals(True)
         w._click_through_check.setChecked(checked)

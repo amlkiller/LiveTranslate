@@ -46,6 +46,13 @@ asr:
   max_speech_duration: 8.0
   # VAD threshold (0.0 - 1.0)
   vad_threshold: 0.5
+  # VAD mode: silero, firered, energy, disabled
+  vad_mode: "silero"
+  # FireRedVAD Stream-VAD model directory. Empty means not selected.
+  firered_vad_model: ""
+  firered_vad_use_gpu: false
+  firered_vad_smooth_window_size: 5
+  firered_vad_frame_aggregation: "max"
   # SenseVoice input padding bucket in seconds (0 = disabled)
   sensevoice_pad_seconds: 0.5
   # faster-whisper input padding bucket in seconds (0 = disabled)

@@ -44,10 +44,12 @@ from model_manager import (
     get_cache_entries,
     list_local_crispasr_models,
     list_local_faster_whisper_models,
+    list_local_firered_vad_models,
     list_local_sherpa_onnx_models,
     migrate_funasr_settings,
     normalize_funasr_model_key,
     resolve_custom_crispasr_model,
+    resolve_custom_firered_vad_model,
     resolve_custom_sherpa_onnx_model,
     resolve_custom_whisper_model,
 )
@@ -474,16 +476,24 @@ class ControlPanel(QWidget):
         mode_group = QGroupBox(t("group_vad_mode"))
         mode_layout = QVBoxLayout(mode_group)
         self._vad_mode = QComboBox()
-        self._vad_mode.addItems([t("vad_silero"), t("vad_energy"), t("vad_disabled")])
-        mode_map = {"silero": 0, "energy": 1, "disabled": 2}
-        self._vad_mode.setCurrentIndex(mode_map.get(s.get("vad_mode", "energy"), 1))
+        for label, key in (
+            (t("vad_silero"), "silero"),
+            (t("vad_firered"), "firered"),
+            (t("vad_energy"), "energy"),
+            (t("vad_disabled"), "disabled"),
+        ):
+            self._vad_mode.addItem(label, key)
+        mode_idx = self._vad_mode.findData(s.get("vad_mode", "silero"))
+        if mode_idx < 0:
+            mode_idx = self._vad_mode.findData("silero")
+        self._vad_mode.setCurrentIndex(mode_idx)
         self._vad_mode.currentIndexChanged.connect(self._on_vad_mode_changed)
         self._vad_mode.currentIndexChanged.connect(self._auto_save)
         mode_layout.addWidget(self._vad_mode)
         layout.addWidget(mode_group)
 
-        silero_group = QGroupBox(t("group_silero_threshold"))
-        silero_layout = QGridLayout(silero_group)
+        self._neural_vad_group = QGroupBox(t("group_neural_vad_threshold"))
+        silero_layout = QGridLayout(self._neural_vad_group)
         self._vad_threshold_slider = QSlider(Qt.Orientation.Horizontal)
         self._vad_threshold_slider.setRange(0, 100)
         vad_pct = int(s.get("vad_threshold", 0.5) * 100)
@@ -495,10 +505,49 @@ class ControlPanel(QWidget):
         silero_layout.addWidget(QLabel(t("label_threshold")), 0, 0)
         silero_layout.addWidget(self._vad_threshold_slider, 0, 1)
         silero_layout.addWidget(self._vad_threshold_label, 0, 2)
-        layout.addWidget(silero_group)
+        layout.addWidget(self._neural_vad_group)
 
-        energy_group = QGroupBox(t("group_energy_threshold"))
-        energy_layout = QGridLayout(energy_group)
+        self._firered_vad_group = QGroupBox(t("group_firered_vad"))
+        firered_layout = QGridLayout(self._firered_vad_group)
+        firered_layout.setColumnStretch(1, 1)
+        self._firered_vad_model_combo = QComboBox()
+        saved_firered_model = s.get("firered_vad_model", "")
+        self._populate_firered_vad_models(saved_firered_model)
+        self._firered_vad_model_combo.currentIndexChanged.connect(
+            self._on_firered_vad_model_changed
+        )
+        self._firered_vad_status = QLabel("")
+        self._firered_vad_status.setStyleSheet("color: #888; font-size: 11px;")
+        self._firered_vad_refresh_btn = QPushButton(
+            t("btn_refresh_firered_vad_models")
+        )
+        self._firered_vad_refresh_btn.clicked.connect(
+            self._refresh_firered_vad_models
+        )
+        self._firered_vad_smooth_window = QSpinBox()
+        self._firered_vad_smooth_window.setRange(1, 30)
+        self._firered_vad_smooth_window.setValue(
+            int(s.get("firered_vad_smooth_window_size", 5) or 5)
+        )
+        self._firered_vad_smooth_window.valueChanged.connect(
+            self._on_firered_vad_setting_changed
+        )
+        self._firered_vad_use_gpu = QCheckBox(t("label_firered_vad_use_gpu"))
+        self._firered_vad_use_gpu.setChecked(bool(s.get("firered_vad_use_gpu", False)))
+        self._firered_vad_use_gpu.toggled.connect(
+            self._on_firered_vad_setting_changed
+        )
+        firered_layout.addWidget(QLabel(t("label_firered_vad_model")), 0, 0)
+        firered_layout.addWidget(self._firered_vad_model_combo, 0, 1)
+        firered_layout.addWidget(self._firered_vad_refresh_btn, 0, 2)
+        firered_layout.addWidget(self._firered_vad_status, 1, 1, 1, 2)
+        firered_layout.addWidget(QLabel(t("label_firered_vad_smooth_window")), 2, 0)
+        firered_layout.addWidget(self._firered_vad_smooth_window, 2, 1)
+        firered_layout.addWidget(self._firered_vad_use_gpu, 3, 1)
+        layout.addWidget(self._firered_vad_group)
+
+        self._energy_group = QGroupBox(t("group_energy_threshold"))
+        energy_layout = QGridLayout(self._energy_group)
         self._energy_slider = QSlider(Qt.Orientation.Horizontal)
         self._energy_slider.setRange(1, 100)
         energy_pm = int(s.get("energy_threshold", 0.03) * 1000)
@@ -510,7 +559,7 @@ class ControlPanel(QWidget):
         energy_layout.addWidget(QLabel(t("label_threshold")), 0, 0)
         energy_layout.addWidget(self._energy_slider, 0, 1)
         energy_layout.addWidget(self._energy_label, 0, 2)
-        layout.addWidget(energy_group)
+        layout.addWidget(self._energy_group)
 
         timing_group = QGroupBox(t("group_timing"))
         timing_layout = QGridLayout(timing_group)
@@ -577,6 +626,8 @@ class ControlPanel(QWidget):
 
         layout.addWidget(timing_group)
 
+        self._update_firered_vad_status()
+        self._update_vad_detail_visibility()
         layout.addStretch()
         return widget
 
@@ -1168,6 +1219,10 @@ class ControlPanel(QWidget):
         """Get the language code from the ASR language combo (stored as userData)."""
         return self._asr_lang.currentData() or "auto"
 
+    def _selected_vad_mode(self) -> str:
+        value = self._vad_mode.currentData()
+        return str(value) if value else "silero"
+
     def _selected_asr_engine(self) -> str:
         value = self._asr_engine.currentData()
         return str(value) if value else "funasr"
@@ -1291,9 +1346,87 @@ class ControlPanel(QWidget):
         )
         self._auto_save()
 
+    def _selected_firered_vad_model(self) -> str:
+        value = self._firered_vad_model_combo.currentData()
+        return str(value) if value is not None else ""
+
+    def _on_firered_vad_model_changed(self):
+        self._current_settings["firered_vad_model"] = (
+            self._selected_firered_vad_model()
+        )
+        self._update_firered_vad_status()
+        self._auto_save()
+
+    def _on_firered_vad_setting_changed(self):
+        self._current_settings["firered_vad_smooth_window_size"] = (
+            self._firered_vad_smooth_window.value()
+        )
+        self._current_settings["firered_vad_use_gpu"] = (
+            self._firered_vad_use_gpu.isChecked()
+        )
+        self._auto_save()
+
     def _selected_whisper_model(self) -> str:
         value = self._whisper_size_combo.currentData()
         return str(value) if value else self._whisper_size_combo.currentText()
+
+    def _populate_firered_vad_models(self, saved_value: str):
+        self._firered_vad_model_combo.clear()
+        self._firered_vad_model_combo.addItem(t("firered_vad_model_placeholder"), "")
+
+        local_prefix = t("firered_vad_local_prefix")
+        for item in list_local_firered_vad_models():
+            idx = self._firered_vad_model_combo.count()
+            self._firered_vad_model_combo.addItem(
+                f"{local_prefix}: {item['name']}", item["path"]
+            )
+            self._firered_vad_model_combo.setItemData(
+                idx, item["path"], Qt.ItemDataRole.ToolTipRole
+            )
+
+        if not saved_value:
+            selected = ""
+        else:
+            selected = resolve_custom_firered_vad_model(saved_value) or saved_value
+        idx = self._firered_vad_model_combo.findData(selected)
+        if idx < 0:
+            idx = self._firered_vad_model_combo.findText(saved_value)
+        if idx < 0 and selected:
+            label = f"{t('firered_vad_missing_local')}: {Path(str(selected)).name}"
+            idx = self._firered_vad_model_combo.count()
+            self._firered_vad_model_combo.addItem(label, selected)
+            self._firered_vad_model_combo.setItemData(
+                idx, str(selected), Qt.ItemDataRole.ToolTipRole
+            )
+        if idx >= 0:
+            self._firered_vad_model_combo.setCurrentIndex(idx)
+
+    def _refresh_firered_vad_models(self):
+        saved = self._selected_firered_vad_model()
+        self._populate_firered_vad_models(saved)
+        self._update_firered_vad_status()
+
+    def _update_firered_vad_status(self):
+        model_key = self._selected_firered_vad_model()
+        if not model_key:
+            if list_local_firered_vad_models():
+                self._firered_vad_status.setText(t("firered_vad_select_model"))
+            else:
+                self._firered_vad_status.setText(t("firered_vad_no_local_models"))
+            self._firered_vad_status.setStyleSheet(
+                "color: #888; font-size: 11px;"
+            )
+            return
+        if resolve_custom_firered_vad_model(model_key):
+            self._firered_vad_status.setText(t("firered_vad_local_ready"))
+            self._firered_vad_status.setStyleSheet(
+                "color: #4a4; font-size: 11px;"
+            )
+        else:
+            self._firered_vad_status.setText(t("firered_vad_invalid_local"))
+            self._firered_vad_status.setStyleSheet(
+                "color: #d66; font-size: 11px;"
+            )
 
     def _populate_sherpa_onnx_models(self, saved_value: str):
         self._sherpa_onnx_model_combo.clear()
@@ -1664,8 +1797,19 @@ class ControlPanel(QWidget):
         self._silence_duration.setEnabled(index == 1)
 
     def _on_vad_mode_changed(self, index):
-        modes = ["silero", "energy", "disabled"]
-        self._current_settings["vad_mode"] = modes[index]
+        self._current_settings["vad_mode"] = self._selected_vad_mode()
+        self._update_vad_detail_visibility()
+
+    def _update_vad_detail_visibility(self):
+        if not hasattr(self, "_vad_mode"):
+            return
+        mode = self._selected_vad_mode()
+        if hasattr(self, "_neural_vad_group"):
+            self._neural_vad_group.setVisible(mode in ("silero", "firered"))
+        if hasattr(self, "_firered_vad_group"):
+            self._firered_vad_group.setVisible(mode == "firered")
+        if hasattr(self, "_energy_group"):
+            self._energy_group.setVisible(mode == "energy")
 
     def _on_threshold_changed(self, value):
         val = value / 100.0
@@ -1745,6 +1889,16 @@ class ControlPanel(QWidget):
 
     def _apply_settings(self):
         self._current_settings["asr_language"] = self._get_asr_lang_code()
+        self._current_settings["vad_mode"] = self._selected_vad_mode()
+        self._current_settings["firered_vad_model"] = (
+            self._selected_firered_vad_model()
+        )
+        self._current_settings["firered_vad_smooth_window_size"] = (
+            self._firered_vad_smooth_window.value()
+        )
+        self._current_settings["firered_vad_use_gpu"] = (
+            self._firered_vad_use_gpu.isChecked()
+        )
         self._current_settings["asr_engine"] = self._selected_asr_engine()
         self._current_settings["funasr_model"] = self._selected_funasr_model()
         if hasattr(self, "_remote_url_edit"):

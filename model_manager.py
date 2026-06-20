@@ -108,6 +108,7 @@ FUNASR_MODEL_PROFILES = {
 
 DEFAULT_FUNASR_MODEL = "sensevoice-small"
 DEFAULT_SHERPA_ONNX_MODEL = ""
+DEFAULT_FIRERED_VAD_MODEL = ""
 
 FUNASR_LEGACY_ENGINE_ALIASES = {
     "sensevoice": "sensevoice-small",
@@ -151,6 +152,7 @@ _CRISPASR_MIN_BYTES = 1_000_000
 
 _MODEL_SIZE_BYTES = {
     "silero-vad": 2_000_000,
+    "firered-vad": 2_200_000,
     "sensevoice": 940_000_000,
     "funasr-nano": 1_050_000_000,
     "funasr-mlt-nano": 1_050_000_000,
@@ -689,6 +691,184 @@ def get_sherpa_onnx_model_path(value) -> str | None:
     return resolve_custom_sherpa_onnx_model(value)
 
 
+def _custom_firered_vad_path(value) -> Path | None:
+    if not value:
+        return None
+    path = Path(str(value)).expanduser()
+    if not path.is_absolute():
+        path = APP_DIR / path
+    return path
+
+
+def _read_firered_vad_metadata(path: Path) -> dict:
+    for name in ("firered_vad_model.json", "model.json"):
+        metadata_path = path / name
+        if not metadata_path.is_file():
+            continue
+        try:
+            data = json.loads(metadata_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            log.warning(f"Invalid FireRedVAD metadata: {metadata_path}: {exc}")
+            return {}
+        return data if isinstance(data, dict) else {}
+    return {}
+
+
+def _firered_family_hint(metadata: dict) -> str:
+    family = str(metadata.get("family") or "").strip().lower().replace("-", "_")
+    if family in ("stream_vad", "streamvad", "firered_stream_vad"):
+        return "stream_vad"
+    return ""
+
+
+def _is_firered_stream_files(path: Path) -> bool:
+    return (path / "cmvn.ark").is_file() and (path / "model.pth.tar").is_file()
+
+
+def _is_stream_vad_name(path: Path) -> bool:
+    name = path.name.lower().replace("_", "-")
+    return "stream-vad" in name or name == "streamvad"
+
+
+def _firered_display_name(path: Path, metadata: dict) -> str:
+    display_name = metadata.get("display_name") or metadata.get("name")
+    if display_name:
+        return str(display_name).strip()
+
+    repo_name = _hf_snapshot_name(path) or _hf_snapshot_name(path.parent)
+    if repo_name:
+        return f"{repo_name} / {path.name}"
+    if _is_stream_vad_name(path) and path.parent != MODELS_DIR:
+        return f"{path.parent.name} / {path.name}"
+    return path.name
+
+
+def detect_firered_vad_model_dir(path) -> dict | None:
+    """Return normalized FireRedVAD Stream-VAD metadata for a usable directory."""
+    if not path:
+        return None
+    path = Path(path)
+    if not path.is_dir():
+        return None
+    try:
+        path = path.resolve()
+    except OSError:
+        return None
+
+    root_metadata = _read_firered_vad_metadata(path)
+    root_family = _firered_family_hint(root_metadata)
+
+    candidate: Path | None = None
+    candidate_metadata: dict = {}
+
+    if _is_firered_stream_files(path) and (
+        _is_stream_vad_name(path) or root_family == "stream_vad"
+    ):
+        candidate = path
+        candidate_metadata = root_metadata
+
+    if candidate is None:
+        model_dir = root_metadata.get("model_dir")
+        if model_dir:
+            child = Path(str(model_dir))
+            if not child.is_absolute():
+                child = path / child
+            if child.is_dir() and _is_firered_stream_files(child):
+                candidate = child.resolve()
+                candidate_metadata = {
+                    **root_metadata,
+                    **_read_firered_vad_metadata(candidate),
+                }
+
+    if candidate is None:
+        for child_name in ("Stream-VAD", "stream-vad", "Stream_VAD", "stream_vad"):
+            child = path / child_name
+            if child.is_dir() and _is_firered_stream_files(child):
+                candidate = child.resolve()
+                candidate_metadata = {
+                    **root_metadata,
+                    **_read_firered_vad_metadata(candidate),
+                }
+                break
+
+    if candidate is None:
+        return None
+
+    return {
+        "name": _firered_display_name(candidate, candidate_metadata),
+        "path": str(candidate),
+        "family": "stream_vad",
+        "display_name": _firered_display_name(candidate, candidate_metadata),
+    }
+
+
+def is_firered_vad_stream_model_dir(path) -> bool:
+    return detect_firered_vad_model_dir(path) is not None
+
+
+def resolve_custom_firered_vad_model(value) -> str | None:
+    path = _custom_firered_vad_path(value)
+    if not path:
+        return None
+    info = detect_firered_vad_model_dir(path)
+    if info:
+        return info["path"]
+    return None
+
+
+def list_local_firered_vad_models() -> list[dict]:
+    """Scan ./models recursively for local FireRedVAD Stream-VAD models."""
+    if not MODELS_DIR.exists():
+        return []
+
+    candidates: set[Path] = set()
+    try:
+        for marker in MODELS_DIR.rglob("cmvn.ark"):
+            if not marker.is_file():
+                continue
+            model_dir = marker.parent
+            candidates.add(model_dir)
+            if _is_stream_vad_name(model_dir):
+                candidates.add(model_dir.parent)
+    except (OSError, PermissionError):
+        return []
+
+    entries = []
+    name_counts = {}
+    seen = set()
+    for candidate in sorted(candidates, key=lambda item: str(item).lower()):
+        info = detect_firered_vad_model_dir(candidate)
+        if not info:
+            continue
+        identity = info["path"]
+        if identity in seen:
+            continue
+        seen.add(identity)
+        name = info["display_name"]
+        name_counts[name] = name_counts.get(name, 0) + 1
+        if name_counts[name] > 1:
+            name = f"{name} ({Path(identity).parent.name})"
+        entries.append({"name": name, "path": identity, "family": "stream_vad"})
+
+    entries.sort(key=lambda item: item["name"].lower())
+    return entries
+
+
+def get_firered_vad_model_path(value) -> str | None:
+    return resolve_custom_firered_vad_model(value)
+
+
+def firered_vad_display_name(path) -> str | None:
+    resolved = resolve_custom_firered_vad_model(path)
+    if not resolved:
+        return None
+    for item in list_local_firered_vad_models():
+        if item["path"] == resolved:
+            return item["name"]
+    info = detect_firered_vad_model_dir(resolved)
+    return info["display_name"] if info else Path(resolved).name
+
+
 def apply_cache_env():
     """Point all model caches to ./models/."""
     resolved = str(MODELS_DIR.resolve())
@@ -1059,6 +1239,9 @@ def get_cache_entries():
 
     for item in list_local_sherpa_onnx_models():
         entries.append((f"sherpa-onnx Local: {item['name']}", Path(item["path"])))
+
+    for item in list_local_firered_vad_models():
+        entries.append((f"FireRedVAD Local: {item['name']}", Path(item["path"])))
 
     if torch_base.exists():
         for d in sorted(torch_base.glob("snakers4_silero-vad*")):

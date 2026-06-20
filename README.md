@@ -27,7 +27,7 @@ Works with any system audio — videos, livestreams, voice chat. No player modif
 - **Streaming translation display**: Real-time character-by-character translation output
 - **Per-model settings**: Streaming, structured output (JSON), context history, disable thinking
 - **Microphone mix-in**: Optionally mix microphone input with system audio for ASR
-- **Low-latency VAD**: 32ms chunks + Silero VAD with adaptive silence detection
+- **Low-latency VAD**: 32ms chunks + Silero VAD or optional FireRedVAD with adaptive silence detection
 - **Transparent overlay**: Always-on-top, click-through, draggable, 14 color themes
 - **CUDA acceleration**: GPU-accelerated ASR inference
 - **Auto model management**: Setup wizard, ModelScope / HuggingFace dual sources
@@ -89,6 +89,7 @@ uv pip install "sherpa-onnx>=1.13.3" "sherpa-onnx-bin>=1.13.3"
 ```
 
 > FunASR uses `--no-deps` because `editdistance` requires a C++ compiler. `editdistance-s` in `pyproject.toml` is a pure-Python drop-in replacement.
+> `uv sync` installs the optional FireRedVAD Python package; its model is downloaded separately only if you choose to use that VAD backend.
 
 </details>
 
@@ -97,6 +98,25 @@ uv pip install "sherpa-onnx>=1.13.3" "sherpa-onnx-bin>=1.13.3"
 1. Setup wizard appears — choose download source (ModelScope / HuggingFace) and cache path
 2. Silero VAD + SenseVoice models download automatically (~1GB)
 3. Main UI appears when ready
+
+## FireRedVAD Models
+
+FireRedVAD is optional and is not downloaded during first launch. To use it, download the official model under `models/FireRedVAD`:
+
+```powershell
+modelscope download --model xukaituo/FireRedVAD --local_dir ./models/FireRedVAD
+# or
+huggingface-cli download FireRedTeam/FireRedVAD --local-dir ./models/FireRedVAD
+```
+
+Make sure these files exist:
+
+```text
+models/FireRedVAD/Stream-VAD/cmvn.ark
+models/FireRedVAD/Stream-VAD/model.pth.tar
+```
+
+Then open Settings → VAD/ASR, choose `FireRedVAD`, click Refresh, and select the local Stream-VAD model. The first integration uses FireRedVAD only as a streaming speech-confidence backend; LiveTranslate still owns segmentation, silence handling, backtrack splitting, incremental ASR, and ASR queueing. FireRed AED is not connected.
 
 ## sherpa-onnx Models
 
@@ -124,14 +144,15 @@ Real API keys are stored in `user_settings.json`, which is git-ignored. Keep `co
 ## Architecture
 
 ```
-Audio (WASAPI 32ms) → VAD (Silero) → ASR → LLM Translation → Overlay
+Audio (WASAPI 32ms) → VAD (Silero / FireRedVAD / Energy) → ASR → LLM Translation → Overlay
          ↑ optional mic mix-in
 ```
 
 ```
 main.py                 Entry point & pipeline
 ├── audio_capture.py    WASAPI loopback + mic mix-in
-├── vad_processor.py    Silero VAD
+├── vad_processor.py    VAD state machine (Silero / FireRedVAD / energy / disabled)
+├── vad_firered.py      FireRedVAD streaming frame adapter
 ├── asr_engine.py       faster-whisper backend
 ├── asr_funasr.py       Unified FunASR model selector backend
 ├── asr_sensevoice.py   SenseVoice backend
@@ -156,6 +177,7 @@ main.py                 Entry point & pipeline
 - CrispASR — ggml C++ ASR runtime hub with GGUF/bin single-file models, used through its Python binding in the ASR worker
 - [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx) — ONNX ASR runtime used through `OfflineRecognizer` and segment-wrapped `OnlineRecognizer`
 - [Silero VAD](https://github.com/snakers4/silero-vad) — Voice activity detection
+- [FireRedVAD](https://github.com/FireRedTeam/FireRedVAD) — Optional streaming VAD confidence backend
 
 ## Star History
 

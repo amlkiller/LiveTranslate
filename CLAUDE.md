@@ -26,7 +26,8 @@ main.py (LiveTranslateApp)
   |-- model_manager.py     Centralized model detection, download, cache utils
   |-- pipeline_controller.py Audio capture + VAD + ASR queue controller, incremental ASR coordination
   |-- audio_capture.py     WASAPI loopback via pyaudiowpatch, auto-reconnects on device change
-  |-- vad_processor.py     Silero VAD / energy-based / disabled modes, progressive silence + backtrack split
+  |-- vad_processor.py     Silero VAD / FireRedVAD / energy-based / disabled modes, progressive silence + backtrack split
+  |-- vad_firered.py      FireRedVAD streaming rolling-frame confidence adapter
   |-- asr_client.py        Main-process ASR worker manager (spawn, Pipe IPC, timeouts)
   |-- asr_worker.py        ASR subprocess entrypoint; loads and owns one backend/model
   |-- asr_engine.py        faster-whisper (Whisper) backend
@@ -149,6 +150,7 @@ Continuous speech is processed incrementally to reduce latency (enabled by `incr
 
 ### VAD Behavior
 
+- **FireRedVAD mode**: `vad_firered.py` lazy-imports `fireredvad` and adapts LiveTranslate 32ms float32 chunks into FireRedVAD 25ms/10ms streaming frames. FireRedVAD only supplies speech confidence; `VADProcessor` still owns segmentation, silence handling, backtrack splitting, incremental ASR buffer state, and ASR queue contract.
 - **Progressive silence**: Buffer越长接受越短的停顿切分 (<3s=full, 3-6s=half, 6-10s=quarter of silence_limit)
 - **Adaptive silence**: Tracks recent pause durations, sets threshold to P75 × 1.2, auto-adjusts between 0.3s~2.0s
 - **Backtrack split**: Max duration时回溯smoothed confidence history找最低谷切分，remainder保留到下一段
@@ -168,7 +170,9 @@ Continuous speech is processed incrementally to reduce latency (enabled by `incr
 - FunASR Nano: `asr_funasr_nano.py` does `os.chdir(model_dir)` before `AutoModel()` inside the ASR worker process, so relative paths in config.yaml (e.g. `Qwen3-0.6B`) resolve locally instead of triggering HuggingFace Hub network requests, without changing the GUI process cwd
 - `Translator` defaults to 10s timeout via `make_openai_client()` to prevent API calls from hanging indefinitely
 - Log window is created at startup but hidden; shown via tray menu "Show Log"
-- Audio chunk duration is 32ms (512 samples at 16kHz), matching Silero VAD's native window size for minimal latency
+- Audio chunk duration is 32ms (512 samples at 16kHz), matching Silero VAD's native window size for minimal latency. FireRedVAD keeps this capture cadence and internally rolls 25ms windows with 10ms shifts.
+- FireRedVAD model discovery expects the official `Stream-VAD` directory containing `cmvn.ark` and `model.pth.tar`; the model is optional and not part of first-launch required downloads.
+- FireRedVAD input scaling is explicit: LiveTranslate keeps ASR/VAD buffers as float32 PCM, while `vad_firered.py` clips to [-1, 1] and multiplies by 32768 before calling `detect_frame()`.
 - FunASR `disable_pbar=True` required in all `generate()` calls — tqdm crashes in GUI process when flushing stderr
 - ASR engine lifecycle: the GUI process never instantiates `ASREngine`, `FunASREngine`, or `AnimeWhisperEngine` directly. It owns an `ASRClient`; each worker process owns one concrete backend/model. Engine/model/device changes shut down the current worker first, then start a new worker. On target load failure, the saved previous worker config is used to restore ASR.
 - CrispASR is treated as a ggml C++ runtime hub with GGUF/bin single-file weights. The GUI process never imports `crispasr`; `asr_crispasr.py` imports the Python binding only inside the ASR worker process and adapts results to the common ASR dict.

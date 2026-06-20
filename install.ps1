@@ -3,7 +3,12 @@
 
 param(
     [ValidateSet("cpu", "cuda11", "cuda12")]
-    [string]$SherpaOnnxRuntime = "cpu"
+    [string]$SherpaOnnxRuntime = "cpu",
+
+    [switch]$DownloadFireRedVAD,
+
+    [ValidateSet("ms", "hf")]
+    [string]$FireRedVADHub = "ms"
 )
 
 $ErrorActionPreference = "Stop"
@@ -95,6 +100,51 @@ function Install-SherpaOnnxRuntime {
     } catch {
         Write-Warn "sherpa-onnx runtime installation failed: $($_.Exception.Message)"
         Write-Warn "sherpa-onnx ASR will not run until the Python package is installed"
+    }
+}
+
+function Test-FireRedVadPackage {
+    param([string]$PythonExe)
+
+    Write-Step "Checking FireRedVAD Python package..."
+    try {
+        $version = & $PythonExe -c "import importlib.metadata as m; import fireredvad; print(m.version('fireredvad'))" 2>&1
+        if ($LASTEXITCODE -ne 0) { throw $version }
+        Write-Ok "fireredvad $($version.Trim())"
+    } catch {
+        Write-Warn "FireRedVAD package check failed: $($_.Exception.Message)"
+        Write-Warn "FireRedVAD VAD mode will be unavailable until fireredvad is installed"
+    }
+}
+
+function Download-FireRedVADModel {
+    param(
+        [string]$PythonExe,
+        [string]$Hub
+    )
+
+    Write-Step "Downloading FireRedVAD Stream-VAD model..."
+    $target = Join-Path $ProjectDir "models\FireRedVAD"
+    New-Item -ItemType Directory -Force -Path $target | Out-Null
+    try {
+        if ($Hub -eq "ms") {
+            Write-Host "  Source: ModelScope xukaituo/FireRedVAD" -ForegroundColor Gray
+            & $PythonExe -c "from modelscope import snapshot_download; snapshot_download(model_id='xukaituo/FireRedVAD', local_dir=r'models/FireRedVAD')"
+        } else {
+            Write-Host "  Source: HuggingFace FireRedTeam/FireRedVAD" -ForegroundColor Gray
+            & $PythonExe -c "from huggingface_hub import snapshot_download; snapshot_download(repo_id='FireRedTeam/FireRedVAD', local_dir=r'models/FireRedVAD')"
+        }
+        if ($LASTEXITCODE -ne 0) { throw "FireRedVAD model download command failed" }
+
+        $cmvn = Join-Path $target "Stream-VAD\cmvn.ark"
+        $model = Join-Path $target "Stream-VAD\model.pth.tar"
+        if (-not (Test-Path $cmvn) -or -not (Test-Path $model)) {
+            throw "Downloaded model is missing Stream-VAD\cmvn.ark or Stream-VAD\model.pth.tar"
+        }
+        Write-Ok "FireRedVAD model ready: models\FireRedVAD\Stream-VAD"
+    } catch {
+        Write-Warn "FireRedVAD model download failed: $($_.Exception.Message)"
+        Write-Warn "You can download it later and place it under models\FireRedVAD"
     }
 }
 
@@ -409,13 +459,20 @@ if (Test-Path ".\repair_torch_metadata.ps1") {
     & powershell -NoProfile -ExecutionPolicy Bypass -File ".\repair_torch_metadata.ps1" -PythonExe $Python
 }
 
-# ── Step 6: Install CrispASR native runtime ──
+# ── Step 6: Verify FireRedVAD dependency ──
+Test-FireRedVadPackage -PythonExe $Python
+
+if ($DownloadFireRedVAD) {
+    Download-FireRedVADModel -PythonExe $Python -Hub $FireRedVADHub
+}
+
+# ── Step 7: Install CrispASR native runtime ──
 Install-CrispAsrNativeRuntime -PythonExe $Python -UseCuda $HasNvidia
 
-# ── Step 7: Install sherpa-onnx runtime ──
+# ── Step 8: Install sherpa-onnx runtime ──
 Install-SherpaOnnxRuntime -PythonExe $Python -Runtime $SherpaOnnxRuntime
 
-# ── Step 8: Install FunASR (no-deps) ──
+# ── Step 9: Install FunASR (no-deps) ──
 Write-Step "Installing FunASR (--no-deps)..."
 
 & $Uv pip install --python $Python funasr --no-deps
