@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-06-20
+- New ASR engine: sherpa-onnx (ONNX OfflineRecognizer), reusing the existing VAD segmentation, ASR worker subprocess, and translation pipeline
+- Settings panel can select a local sherpa-onnx model directory, provider, and thread count; local scanning supports SenseVoice / Paraformer / Moonshine / Whisper directory layouts, plus online transducer snapshots with `encoder.onnx` / `decoder.onnx` / `joiner.onnx` / `tokens.txt`
+- sherpa-onnx online transducer models use `OnlineRecognizer` as a VAD segment wrapper in this phase; partial streaming ASR is not enabled yet
+- sherpa-onnx does not use a built-in downloader in this phase: extract official models anywhere under `models/`, then refresh and select them in settings
+- Installer now installs the CPU sherpa-onnx runtime by default, with `-SherpaOnnxRuntime cuda11/cuda12` for CUDA wheels
+
 ## 2026-06-19
 - Fix CrispASR startup failure with `No module named 'crispasr'`: added the CrispASR Python binding to `pyproject.toml`, pinned to GitHub Releases `v0.7.2`
 - Installer now downloads the prebuilt Windows `libcrispasr` DLL runtime from Releases and places it next to the installed `crispasr` package

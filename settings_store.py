@@ -49,6 +49,25 @@ def normalize_settings(config: dict[str, Any], saved: dict | None = None) -> dic
     settings.setdefault(
         "crispasr_unified_memory", asr.get("crispasr_unified_memory", True)
     )
+    settings.setdefault("sherpa_onnx_model", asr.get("sherpa_onnx_model", ""))
+    settings.setdefault(
+        "sherpa_onnx_provider", asr.get("sherpa_onnx_provider", "auto")
+    )
+    settings.setdefault(
+        "sherpa_onnx_num_threads", asr.get("sherpa_onnx_num_threads", 2)
+    )
+    settings.setdefault(
+        "sherpa_onnx_decoding_method",
+        asr.get("sherpa_onnx_decoding_method", "greedy_search"),
+    )
+    settings.setdefault(
+        "sherpa_onnx_left_padding_seconds",
+        asr.get("sherpa_onnx_left_padding_seconds", 0.3),
+    )
+    settings.setdefault(
+        "sherpa_onnx_tail_padding_seconds",
+        asr.get("sherpa_onnx_tail_padding_seconds", 0.5),
+    )
     settings.setdefault("asr_device", asr.get("device", "cuda"))
     settings.setdefault(
         "sensevoice_pad_seconds", asr.get("sensevoice_pad_seconds", 0.5)

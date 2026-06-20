@@ -21,7 +21,7 @@ Windows 实时音频翻译工具。捕获系统音频（WASAPI loopback）和可
 ## 功能特性
 
 - **实时翻译管线**：系统音频 → VAD → ASR → LLM 翻译 → 字幕显示
-- **多 ASR 引擎**：faster-whisper、SenseVoice、FunASR Nano、Anime-Whisper、CrispASR
+- **多 ASR 引擎**：faster-whisper、SenseVoice、FunASR Nano、Anime-Whisper、CrispASR、sherpa-onnx
 - **兼容任意 OpenAI 格式 API**：DeepSeek、Grok、Qwen、GPT、Ollama、vLLM 等
 - **流式翻译显示**：翻译结果逐字实时显示
 - **模型独立配置**：流式传输、结构化输出(JSON)、上下文历史、禁用思考
@@ -81,6 +81,7 @@ uv pip install torch torchaudio --index-url https://download.pytorch.org/whl/cpu
 # 依赖
 uv sync --locked --inexact --no-install-package torch --no-install-package torchaudio
 uv pip install funasr --no-deps
+uv pip install "sherpa-onnx>=1.13.3" "sherpa-onnx-bin>=1.13.3"
 
 # 启动
 .venv\Scripts\python.exe main.py
@@ -95,6 +96,16 @@ uv pip install funasr --no-deps
 1. 弹出设置向导——选择下载源（ModelScope 适合国内，HuggingFace 适合海外）和缓存路径
 2. 自动下载 Silero VAD + SenseVoice 模型（约 1GB）
 3. 下载完成后进入主界面
+
+## sherpa-onnx 模型
+
+LiveTranslate 通过 Python `OfflineRecognizer` 和 `OnlineRecognizer` API 接入 sherpa-onnx 本地 ONNX 模型。Online 模型当前是对 VAD 切段做整段 segment-wrapper 解码，不是真正逐 chunk partial streaming ASR。`install.ps1` 默认安装 CPU wheel；CUDA 版需要用 CUDA wheel 替换，例如：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File install.ps1 -SherpaOnnxRuntime cuda12
+```
+
+从 sherpa-onnx 官方 releases 下载 ASR 模型压缩包，解压到 `models/` 下任意子目录；然后在 设置 → VAD/ASR 中选择 `sherpa-onnx (ONNX)`，点击刷新并选择本地模型目录。Online transducer 扫描支持 `encoder.onnx`/`decoder.onnx`/`joiner.onnx`，也支持 `encoder.int8.onnx`/`decoder.int8.onnx`/`joiner.int8.onnx`。PR #3671 对应的 Nemotron 包名类似 `sherpa-onnx-nemotron-3.5-asr-streaming-0.6b-560ms-int8-2026-06-11`；非官方 snapshot 的 ONNX 文件仍必须能被当前安装的 sherpa-onnx/ONNX Runtime 接受。`onnx-community/nemotron-3.5-asr-streaming-0.6b-onnx-int4` 这类结构不属于此 sherpa-onnx 路线。
 
 ## 配置翻译 API
 
@@ -126,6 +137,7 @@ main.py                 主入口，管线编排
 ├── asr_funasr_nano.py  FunASR Nano 后端
 ├── asr_anime_whisper.py Anime-Whisper 后端 (日语动画/Galgame)
 ├── asr_crispasr.py     CrispASR ggml runtime 后端
+├── asr_sherpa_onnx.py  sherpa-onnx OfflineRecognizer/OnlineRecognizer 后端
 ├── translator.py       OpenAI 兼容翻译客户端 (流式/JSON/上下文)
 ├── model_manager.py    模型下载与缓存管理
 ├── subtitle_overlay.py PyQt6 透明悬浮窗
@@ -140,6 +152,7 @@ main.py                 主入口，管线编排
 - [FunASR](https://github.com/modelscope/FunASR) — SenseVoice / Fun-ASR-Nano
 - [Anime-Whisper](https://huggingface.co/litagin/anime-whisper) — 日语动画/Galgame 专用 ASR
 - CrispASR — ggml C++ ASR runtime hub，使用 GGUF/bin 单文件模型，LiveTranslate 通过 ASR worker 内的 Python binding 调用
+- [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx) — 通过 `OfflineRecognizer` 和 segment-wrapper `OnlineRecognizer` 调用的 ONNX ASR runtime
 - [Silero VAD](https://github.com/snakers4/silero-vad) — 语音活动检测
 
 ## Star History

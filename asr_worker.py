@@ -1,6 +1,8 @@
 import gc
+import importlib.metadata
 import inspect
 import logging
+import os
 import sys
 import traceback
 from typing import Any
@@ -51,6 +53,43 @@ def _parse_device(device: str) -> tuple[str, int]:
     return device, 0
 
 
+def _sherpa_onnx_cuda_wheel_available() -> bool:
+    try:
+        version = importlib.metadata.version("sherpa-onnx")
+    except importlib.metadata.PackageNotFoundError:
+        return False
+    return "+cuda" in version.lower()
+
+
+def _resolve_sherpa_onnx_provider(provider: str, parsed_device: str) -> str:
+    provider = str(provider or "auto").lower()
+    if provider == "auto":
+        return (
+            "cuda"
+            if parsed_device == "cuda" and _sherpa_onnx_cuda_wheel_available()
+            else "cpu"
+        )
+    if provider == "cuda" and not _sherpa_onnx_cuda_wheel_available():
+        raise RuntimeError(
+            "sherpa-onnx CUDA provider selected, but the installed package is "
+            "not a CUDA wheel. Install the CUDA sherpa-onnx wheel or select CPU."
+        )
+    if provider not in ("cpu", "cuda"):
+        raise ValueError(f"Unsupported sherpa-onnx provider: {provider}")
+    return provider
+
+
+def _is_sherpa_onnx_cuda_load_error(exc: Exception) -> bool:
+    message = str(exc).lower()
+    return (
+        "executionprovider_cuda" in message
+        or "onnxruntime_providers_cuda" in message
+        or "cublas" in message
+        or "cudnn" in message
+        or "failed to load shared library" in message
+    )
+
+
 def _load_engine(config: dict):
     from model_manager import MODELS_DIR, apply_cache_env
 
@@ -88,8 +127,6 @@ def _load_engine(config: dict):
             gpu_backend = "cuda"
         device_index = int(config.get("crispasr_device_index", device_index))
         os_env_device = str(device_index)
-        import os
-
         os.environ["CRISPASR_ARG_DEVICE"] = os_env_device
         if config.get("crispasr_unified_memory", True):
             os.environ["GGML_CUDA_ENABLE_UNIFIED_MEMORY"] = "1"
@@ -102,6 +139,44 @@ def _load_engine(config: dict):
             punc_model=config.get("crispasr_punc_model", "auto"),
             unified_memory=config.get("crispasr_unified_memory", True),
         )
+    elif engine_type == "sherpa-onnx":
+        requested_provider = str(config.get("sherpa_onnx_provider", "auto")).lower()
+        provider = _resolve_sherpa_onnx_provider(
+            requested_provider, parsed_device
+        )
+        if provider == "cuda":
+            os.environ["CUDA_VISIBLE_DEVICES"] = str(device_index)
+
+        from asr_sherpa_onnx import SherpaOnnxEngine
+
+        kwargs = {
+            "model_path": config["sherpa_onnx_model_path"],
+            "model_info": config["sherpa_onnx_model_info"],
+            "num_threads": int(config.get("sherpa_onnx_num_threads", 2)),
+            "language": language,
+            "decoding_method": config.get("sherpa_onnx_decoding_method", "greedy_search"),
+            "left_padding_seconds": float(
+                config.get("sherpa_onnx_left_padding_seconds", 0.3)
+            ),
+            "tail_padding_seconds": float(
+                config.get("sherpa_onnx_tail_padding_seconds", 0.5)
+            ),
+        }
+        try:
+            engine = SherpaOnnxEngine(provider=provider, **kwargs)
+        except RuntimeError as exc:
+            if (
+                requested_provider == "auto"
+                and provider == "cuda"
+                and _is_sherpa_onnx_cuda_load_error(exc)
+            ):
+                log.warning(
+                    "sherpa-onnx CUDA provider failed to load; falling back to CPU. "
+                    f"Reason: {exc}"
+                )
+                engine = SherpaOnnxEngine(provider="cpu", **kwargs)
+            else:
+                raise
     else:
         from asr_engine import ASREngine
 

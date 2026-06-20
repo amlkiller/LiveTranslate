@@ -1,5 +1,12 @@
 # 更新日志
 
+## 2026-06-20
+- 新增 ASR 引擎: sherpa-onnx (ONNX OfflineRecognizer), 复用现有 VAD 切段、ASR worker 子进程和翻译管线
+- 设置面板可选择 sherpa-onnx 本地模型目录、provider 和线程数; 模型扫描支持 SenseVoice / Paraformer / Moonshine / Whisper 目录结构，以及包含 `encoder.onnx` / `decoder.onnx` / `joiner.onnx` / `tokens.txt` 的 online transducer snapshot
+- sherpa-onnx online transducer 模型当前通过 `OnlineRecognizer` 对 VAD 切段做整段识别; 暂未启用 partial streaming ASR
+- sherpa-onnx 默认不内置下载器: 将官方模型解压到 `models/` 下任意子目录后在设置中刷新选择
+- 安装脚本默认安装 CPU 版 sherpa-onnx runtime, 可通过 `-SherpaOnnxRuntime cuda11/cuda12` 安装 CUDA wheel
+
 ## 2026-06-19
 - 修复 CrispASR 启动时报 `No module named 'crispasr'`: `pyproject.toml` 新增 CrispASR Python binding 依赖, 固定到 GitHub Releases `v0.7.2`
 - 安装脚本新增 CrispASR 原生运行时安装: 从 Releases 下载预编译 `libcrispasr` Windows DLL, 放入已安装的 `crispasr` 包目录

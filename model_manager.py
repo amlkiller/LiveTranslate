@@ -1,5 +1,6 @@
 import os
 import contextlib
+import json
 import logging
 from pathlib import Path
 
@@ -106,6 +107,7 @@ FUNASR_MODEL_PROFILES = {
 }
 
 DEFAULT_FUNASR_MODEL = "sensevoice-small"
+DEFAULT_SHERPA_ONNX_MODEL = ""
 
 FUNASR_LEGACY_ENGINE_ALIASES = {
     "sensevoice": "sensevoice-small",
@@ -140,6 +142,7 @@ ASR_DISPLAY_NAMES = {
     "whisper": "Whisper",
     "anime-whisper": "Anime-Whisper",
     "crispasr": "CrispASR",
+    "sherpa-onnx": "sherpa-onnx",
 }
 
 _CRISPASR_EXTS = {".gguf", ".bin"}
@@ -406,6 +409,285 @@ def local_crispasr_display_name(path) -> str | None:
     return Path(resolved).name
 
 
+def _custom_sherpa_onnx_path(value) -> Path | None:
+    if not value:
+        return None
+    path = Path(str(value)).expanduser()
+    if not path.is_absolute():
+        path = APP_DIR / path
+    return path
+
+
+def _read_sherpa_onnx_metadata(path: Path) -> dict | None:
+    metadata_path = path / "sherpa_onnx_model.json"
+    if not metadata_path.is_file():
+        return None
+    try:
+        data = json.loads(metadata_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        log.warning(f"Invalid sherpa-onnx metadata: {metadata_path}: {exc}")
+        return {"_invalid": True}
+    return data if isinstance(data, dict) else {"_invalid": True}
+
+
+def _sherpa_file(path: Path, metadata: dict, *keys: str, default: str | None = None):
+    for key in keys:
+        value = metadata.get(key)
+        if value:
+            candidate = Path(str(value))
+            if not candidate.is_absolute():
+                candidate = path / candidate
+            if candidate.is_file():
+                return str(candidate.resolve())
+    if default:
+        candidate = path / default
+        if candidate.is_file():
+            return str(candidate.resolve())
+    return None
+
+
+def _first_glob_file(path: Path, *patterns: str) -> str | None:
+    for pattern in patterns:
+        matches = sorted(path.glob(pattern))
+        for match in matches:
+            if match.is_file():
+                return str(match.resolve())
+    return None
+
+
+def _sherpa_family_hint(path: Path, metadata: dict) -> str | None:
+    family = str(metadata.get("family") or "").strip().lower().replace("-", "_")
+    if family:
+        aliases = {
+            "sensevoice": "sense_voice",
+            "sense_voice": "sense_voice",
+            "paraformer": "paraformer",
+            "moonshine": "moonshine",
+            "whisper": "whisper",
+            "online_transducer": "online_transducer",
+            "online-transducer": "online_transducer",
+        }
+        return aliases.get(family)
+
+    name = path.name.lower().replace("-", "_")
+    if "sense_voice" in name or "sensevoice" in name:
+        return "sense_voice"
+    if "paraformer" in name:
+        return "paraformer"
+    if "moonshine" in name:
+        return "moonshine"
+    if name.startswith("sherpa_onnx_whisper") or name.startswith("sherpa-onnx-whisper"):
+        return "whisper"
+    return None
+
+
+def _sherpa_display_name(path: Path, metadata: dict) -> str:
+    display_name = metadata.get("display_name") or metadata.get("name")
+    if display_name:
+        return str(display_name).strip()
+    return _hf_snapshot_name(path) or path.name
+
+
+def _is_sherpa_online_transducer_dir(path: Path, metadata: dict, family: str | None) -> bool:
+    encoder = _sherpa_file(
+        path, metadata, "encoder", "encoder_file", default="encoder.onnx"
+    ) or _first_glob_file(path, "encoder.int8.onnx", "encoder*.onnx")
+    decoder = _sherpa_file(
+        path, metadata, "decoder", "decoder_file", default="decoder.onnx"
+    ) or _first_glob_file(path, "decoder.int8.onnx", "decoder*.onnx")
+    joiner = _sherpa_file(
+        path, metadata, "joiner", "joiner_file", default="joiner.onnx"
+    ) or _first_glob_file(path, "joiner.int8.onnx", "joiner*.onnx")
+    tokens = _sherpa_file(path, metadata, "tokens", "tokens_file", default="tokens.txt")
+    if encoder and decoder and joiner and tokens:
+        return True
+
+    if family == "online_transducer":
+        joint = _sherpa_file(path, metadata, "joint", "joint_file", default="joint.onnx")
+        return bool(encoder and decoder and joint and tokens)
+    return False
+
+
+def detect_sherpa_onnx_model_dir(path) -> dict | None:
+    """Return normalized sherpa-onnx model metadata when a directory is usable."""
+    if not path:
+        return None
+    path = Path(path)
+    if not path.is_dir():
+        return None
+    try:
+        path = path.resolve()
+    except OSError:
+        return None
+
+    metadata = _read_sherpa_onnx_metadata(path) or {}
+    if metadata.get("_invalid"):
+        return None
+
+    family = _sherpa_family_hint(path, metadata)
+    if family is None and _is_sherpa_online_transducer_dir(path, metadata, family):
+        family = "online_transducer"
+    tokens_file = _sherpa_file(path, metadata, "tokens", "tokens_file", default="tokens.txt")
+    sample_rate = int(metadata.get("sample_rate") or 16000)
+    feature_dim = int(metadata.get("feature_dim") or 80)
+
+    base = {
+        "path": str(path),
+        "family": family,
+        "display_name": _sherpa_display_name(path, metadata),
+        "sample_rate": sample_rate,
+        "feature_dim": feature_dim,
+    }
+
+    if family == "sense_voice":
+        model_file = (
+            _sherpa_file(path, metadata, "model", "model_file")
+            or _first_glob_file(path, "model.int8.onnx", "model.onnx")
+        )
+        if tokens_file and model_file:
+            return {**base, "tokens_file": tokens_file, "model_file": model_file}
+        return None
+
+    if family == "paraformer":
+        model_file = (
+            _sherpa_file(path, metadata, "model", "model_file", "paraformer")
+            or _first_glob_file(path, "model.onnx")
+        )
+        if tokens_file and model_file:
+            return {**base, "tokens_file": tokens_file, "model_file": model_file}
+        return None
+
+    if family == "moonshine":
+        preprocessor = (
+            _sherpa_file(path, metadata, "preprocessor", "preprocessor_file", "preprocess")
+            or _first_glob_file(path, "preprocess.onnx", "preprocessor.onnx")
+        )
+        encoder = _sherpa_file(path, metadata, "encoder", "encoder_file") or _first_glob_file(
+            path, "encode*.onnx", "encoder*.onnx"
+        )
+        uncached_decoder = _sherpa_file(
+            path, metadata, "uncached_decoder", "uncached_decoder_file"
+        ) or _first_glob_file(path, "uncached_decode*.onnx", "uncached_decoder*.onnx")
+        cached_decoder = _sherpa_file(
+            path, metadata, "cached_decoder", "cached_decoder_file"
+        ) or _first_glob_file(path, "cached_decode*.onnx", "cached_decoder*.onnx")
+        if tokens_file and preprocessor and encoder and uncached_decoder and cached_decoder:
+            return {
+                **base,
+                "tokens_file": tokens_file,
+                "preprocessor_file": preprocessor,
+                "encoder_file": encoder,
+                "uncached_decoder_file": uncached_decoder,
+                "cached_decoder_file": cached_decoder,
+            }
+        return None
+
+    if family == "whisper":
+        encoder = _sherpa_file(path, metadata, "encoder", "encoder_file") or _first_glob_file(
+            path, "*encoder*.onnx"
+        )
+        decoder = _sherpa_file(path, metadata, "decoder", "decoder_file") or _first_glob_file(
+            path, "*decoder*.onnx"
+        )
+        tokens = tokens_file or _first_glob_file(path, "*tokens.txt")
+        if encoder and decoder and tokens:
+            return {**base, "tokens_file": tokens, "encoder_file": encoder, "decoder_file": decoder}
+        return None
+
+    if family == "online_transducer":
+        encoder = _sherpa_file(
+            path, metadata, "encoder", "encoder_file", default="encoder.onnx"
+        ) or _first_glob_file(path, "encoder.int8.onnx", "encoder*.onnx")
+        decoder = _sherpa_file(
+            path, metadata, "decoder", "decoder_file", default="decoder.onnx"
+        ) or _first_glob_file(path, "decoder.int8.onnx", "decoder*.onnx")
+        joiner = _sherpa_file(
+            path, metadata, "joiner", "joiner_file", default="joiner.onnx"
+        ) or _first_glob_file(path, "joiner.int8.onnx", "joiner*.onnx")
+        if not joiner:
+            joiner = _sherpa_file(path, metadata, "joint", "joint_file", default="joint.onnx")
+        if encoder and decoder and joiner and tokens_file:
+            info = {
+                **base,
+                "tokens_file": tokens_file,
+                "encoder_file": encoder,
+                "decoder_file": decoder,
+                "joiner_file": joiner,
+            }
+            for key in ("model_type", "modeling_unit", "bpe_vocab"):
+                value = metadata.get(key)
+                if value:
+                    info[key] = str(value)
+            return info
+        return None
+
+    return None
+
+
+def is_sherpa_onnx_model_dir(path) -> bool:
+    return detect_sherpa_onnx_model_dir(path) is not None
+
+
+def resolve_custom_sherpa_onnx_model(value) -> str | None:
+    path = _custom_sherpa_onnx_path(value)
+    if path and is_sherpa_onnx_model_dir(path):
+        return str(path.resolve())
+    return None
+
+
+def list_local_sherpa_onnx_models() -> list[dict]:
+    """Scan ./models recursively for recognizable local sherpa-onnx models."""
+    if not MODELS_DIR.exists():
+        return []
+
+    entries = []
+    name_counts = {}
+    seen = set()
+    try:
+        dirs = [MODELS_DIR, *[p for p in MODELS_DIR.rglob("*") if p.is_dir()]]
+    except (OSError, PermissionError):
+        return []
+
+    for model_dir in dirs:
+        info = detect_sherpa_onnx_model_dir(model_dir)
+        if not info:
+            continue
+        identity = info["path"]
+        if identity in seen:
+            continue
+        seen.add(identity)
+        name = info["display_name"]
+        name_counts[name] = name_counts.get(name, 0) + 1
+        if name_counts[name] > 1:
+            name = f"{name} ({model_dir.parent.name})"
+        entries.append(
+            {
+                "name": name,
+                "path": identity,
+                "family": info["family"],
+                "info": info,
+            }
+        )
+
+    entries.sort(key=lambda item: item["name"].lower())
+    return entries
+
+
+def local_sherpa_onnx_display_name(path) -> str | None:
+    resolved = resolve_custom_sherpa_onnx_model(path)
+    if not resolved:
+        return None
+    for item in list_local_sherpa_onnx_models():
+        if item["path"] == resolved:
+            return item["name"]
+    info = detect_sherpa_onnx_model_dir(resolved)
+    return info["display_name"] if info else Path(resolved).name
+
+
+def get_sherpa_onnx_model_path(value) -> str | None:
+    return resolve_custom_sherpa_onnx_model(value)
+
+
 def apply_cache_env():
     """Point all model caches to ./models/."""
     resolved = str(MODELS_DIR.resolve())
@@ -473,6 +755,8 @@ def _hf_repo_complete(org: str, name: str, min_bytes: int = 50_000_000) -> bool:
 def is_asr_cached(engine_type, model_size="medium", hub="ms") -> bool:
     if engine_type == "crispasr":
         return resolve_custom_crispasr_model(model_size) is not None
+    if engine_type == "sherpa-onnx":
+        return get_sherpa_onnx_model_path(model_size) is not None
     if engine_type == "funasr" or engine_type in FUNASR_LEGACY_ENGINE_ALIASES:
         model_key = (
             FUNASR_LEGACY_ENGINE_ALIASES[engine_type]
@@ -534,7 +818,7 @@ def get_missing_models(engine, model_size, hub) -> list:
     if not is_asr_cached(engine, model_size, hub):
         if engine == "whisper" and model_size not in _WHISPER_SIZES:
             return missing
-        if engine == "crispasr":
+        if engine in ("crispasr", "sherpa-onnx"):
             return missing
         if engine == "funasr" or engine in FUNASR_LEGACY_ENGINE_ALIASES:
             model_key = (
@@ -564,7 +848,12 @@ def get_missing_models(engine, model_size, hub) -> list:
     return missing
 
 
-def get_local_model_path(engine_type, hub="ms", funasr_model: str | None = None):
+def get_local_model_path(
+    engine_type,
+    hub="ms",
+    funasr_model: str | None = None,
+    model_path_or_id: str | None = None,
+):
     """Return local snapshot path if model is cached, else None.
 
     Checks the preferred hub first, then falls back to the other hub.
@@ -572,6 +861,9 @@ def get_local_model_path(engine_type, hub="ms", funasr_model: str | None = None)
     if engine_type == "crispasr":
         model_value = funasr_model
         return resolve_custom_crispasr_model(model_value)
+    if engine_type == "sherpa-onnx":
+        model_value = model_path_or_id if model_path_or_id is not None else funasr_model
+        return get_sherpa_onnx_model_path(model_value)
 
     if engine_type == "funasr" or engine_type in FUNASR_LEGACY_ENGINE_ALIASES:
         model_key = (
@@ -763,6 +1055,9 @@ def get_cache_entries():
 
     for item in list_local_crispasr_models():
         entries.append((f"CrispASR Local: {item['name']}", Path(item["path"])))
+
+    for item in list_local_sherpa_onnx_models():
+        entries.append((f"sherpa-onnx Local: {item['name']}", Path(item["path"])))
 
     if torch_base.exists():
         for d in sorted(torch_base.glob("snakers4_silero-vad*")):

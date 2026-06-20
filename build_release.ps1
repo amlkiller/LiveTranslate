@@ -208,6 +208,11 @@ if (Test-Path (Join-Path $Root "repair_torch_metadata.ps1")) {
 
 Install-CrispAsrNativeRuntime -PythonExe $Py -UseCuda ($Index -notlike "*cpu*")
 
+& $Uv pip install --python $Py "sherpa-onnx>=1.13.3" "sherpa-onnx-bin>=1.13.3"
+if ($LASTEXITCODE -ne 0) {
+    Write-Host "sherpa-onnx install failed; sherpa-onnx ASR will be unavailable until installed manually" -ForegroundColor Yellow
+}
+
 & $Uv pip install --python $Py funasr --no-deps
 
 Write-Host "Setup complete." -ForegroundColor Green

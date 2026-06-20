@@ -9,12 +9,15 @@ from model_manager import (
     ASR_DISPLAY_NAMES,
     DEFAULT_FUNASR_MODEL,
     MODELS_DIR,
+    detect_sherpa_onnx_model_dir,
     funasr_display_name,
     funasr_supports_padding,
     get_missing_models,
+    get_sherpa_onnx_model_path,
     is_asr_cached,
     local_crispasr_display_name,
     local_faster_whisper_display_name,
+    local_sherpa_onnx_display_name,
     normalize_asr_engine_selection,
     normalize_funasr_model_key,
     resolve_custom_crispasr_model,
@@ -82,6 +85,9 @@ class ASRService:
             config["asr"].get("funasr_model", DEFAULT_FUNASR_MODEL)
         )
         self._crispasr_model_key = str(config["asr"].get("crispasr_model", "") or "")
+        self._sherpa_onnx_model_path = str(
+            config["asr"].get("sherpa_onnx_model", "") or ""
+        )
         self._asr_lock = threading.RLock()
 
     @property
@@ -157,6 +163,54 @@ class ASRService:
                 self._config["asr"].get("crispasr_unified_memory", True),
             )
         )
+        sherpa_onnx_model = str(
+            settings.get(
+                "sherpa_onnx_model",
+                self._config["asr"].get(
+                    "sherpa_onnx_model", self._sherpa_onnx_model_path
+                ),
+            )
+            or ""
+        )
+        sherpa_onnx_provider = str(
+            settings.get(
+                "sherpa_onnx_provider",
+                self._config["asr"].get("sherpa_onnx_provider", "auto"),
+            )
+            or "auto"
+        ).lower()
+        sherpa_onnx_num_threads = int(
+            settings.get(
+                "sherpa_onnx_num_threads",
+                self._config["asr"].get("sherpa_onnx_num_threads", 2),
+            )
+            or 2
+        )
+        sherpa_onnx_decoding_method = str(
+            settings.get(
+                "sherpa_onnx_decoding_method",
+                self._config["asr"].get(
+                    "sherpa_onnx_decoding_method", "greedy_search"
+                ),
+            )
+            or "greedy_search"
+        )
+        sherpa_onnx_tail_padding_seconds = float(
+            settings.get(
+                "sherpa_onnx_tail_padding_seconds",
+                self._config["asr"].get("sherpa_onnx_tail_padding_seconds", 0.5),
+            )
+            or 0.0
+        )
+        sherpa_onnx_left_padding_seconds = float(
+            settings.get(
+                "sherpa_onnx_left_padding_seconds",
+                self._config["asr"].get("sherpa_onnx_left_padding_seconds", 0.3),
+            )
+            or 0.0
+        )
+        sherpa_onnx_model_path = None
+        sherpa_onnx_model_info = None
 
         if engine_type == "whisper":
             model_path = resolve_custom_whisper_model(model_size)
@@ -186,6 +240,38 @@ class ASRService:
                     f"CrispASR model must be a local .gguf/.bin file: {crispasr_model}; "
                     "keeping current ASR worker",
                 )
+        elif engine_type == "sherpa-onnx":
+            if not sherpa_onnx_model:
+                return self._invalid_plan(
+                    engine_type,
+                    device,
+                    hub,
+                    download_proxy,
+                    "sherpa-onnx model is not selected; keeping current ASR worker",
+                )
+            sherpa_onnx_model_path = get_sherpa_onnx_model_path(sherpa_onnx_model)
+            if not sherpa_onnx_model_path:
+                return self._invalid_plan(
+                    engine_type,
+                    device,
+                    hub,
+                    download_proxy,
+                    f"sherpa-onnx model directory is unavailable or unrecognized: "
+                    f"{sherpa_onnx_model}; keeping current ASR worker",
+                )
+            sherpa_onnx_model_info = detect_sherpa_onnx_model_dir(
+                sherpa_onnx_model_path
+            )
+            if not sherpa_onnx_model_info:
+                return self._invalid_plan(
+                    engine_type,
+                    device,
+                    hub,
+                    download_proxy,
+                    f"sherpa-onnx model directory is unavailable or unrecognized: "
+                    f"{sherpa_onnx_model_path}; keeping current ASR worker",
+                )
+            cache_model_key = sherpa_onnx_model_path
 
         compute = self._config["asr"]["compute_type"]
         if engine_type == "whisper":
@@ -200,6 +286,16 @@ class ASRService:
                 crispasr_device_index,
                 crispasr_punc_model,
                 crispasr_unified_memory,
+            )
+        elif engine_type == "sherpa-onnx":
+            signature_model = (
+                sherpa_onnx_model_path,
+                sherpa_onnx_model_info["family"],
+                sherpa_onnx_provider,
+                sherpa_onnx_num_threads,
+                sherpa_onnx_decoding_method,
+                sherpa_onnx_left_padding_seconds,
+                sherpa_onnx_tail_padding_seconds,
             )
         else:
             signature_model = engine_type
@@ -237,7 +333,12 @@ class ASRService:
 
         cached = is_asr_cached(engine_type, cache_model_key, hub)
         display_name = self._display_name(
-            engine_type, model_size, model_path, funasr_model, crispasr_model
+            engine_type,
+            model_size,
+            model_path,
+            funasr_model,
+            crispasr_model,
+            sherpa_onnx_model_path,
         )
         worker_config = {
             "engine_type": engine_type,
@@ -275,6 +376,19 @@ class ASRService:
                     "crispasr_unified_memory": crispasr_unified_memory,
                 }
             )
+        elif engine_type == "sherpa-onnx":
+            worker_config.update(
+                {
+                    "sherpa_onnx_model": sherpa_onnx_model_path,
+                    "sherpa_onnx_model_path": sherpa_onnx_model_path,
+                    "sherpa_onnx_model_info": sherpa_onnx_model_info,
+                    "sherpa_onnx_provider": sherpa_onnx_provider,
+                    "sherpa_onnx_num_threads": sherpa_onnx_num_threads,
+                    "sherpa_onnx_decoding_method": sherpa_onnx_decoding_method,
+                    "sherpa_onnx_left_padding_seconds": sherpa_onnx_left_padding_seconds,
+                    "sherpa_onnx_tail_padding_seconds": sherpa_onnx_tail_padding_seconds,
+                }
+            )
         target_state = {
             "type": engine_type,
             "signature": signature,
@@ -288,6 +402,9 @@ class ASRService:
             "crispasr_model_key": crispasr_model
             if engine_type == "crispasr"
             else self._crispasr_model_key,
+            "sherpa_onnx_model_path": sherpa_onnx_model_path
+            if engine_type == "sherpa-onnx"
+            else self._sherpa_onnx_model_path,
             "config": worker_config,
             "display_name": display_name,
         }
@@ -324,6 +441,7 @@ class ASRService:
                 "funasr_model_key": self._funasr_model_key,
                 "whisper_model_size": self._whisper_model_size,
                 "crispasr_model_key": self._crispasr_model_key,
+                "sherpa_onnx_model_path": self._sherpa_onnx_model_path,
                 "config": old_config,
                 "display_name": (old_config or {}).get("display_name"),
             }
@@ -514,6 +632,9 @@ class ASRService:
             self._funasr_model_key = state["funasr_model_key"]
             self._whisper_model_size = state["whisper_model_size"]
             self._crispasr_model_key = state["crispasr_model_key"]
+            self._sherpa_onnx_model_path = state.get(
+                "sherpa_onnx_model_path", self._sherpa_onnx_model_path
+            )
             self._asr_ready = True
             self._asr_error_count = 0
 
@@ -524,6 +645,7 @@ class ASRService:
         model_path: str | None,
         funasr_model: str,
         crispasr_model: str,
+        sherpa_onnx_model_path: str | None = None,
     ) -> str:
         display_name = ASR_DISPLAY_NAMES.get(engine_type, engine_type)
         if engine_type == "whisper":
@@ -543,4 +665,10 @@ class ASRService:
                     or Path(crispasr_model).name
                 )
                 display_name = f"CrispASR {display_model}"
+        elif engine_type == "sherpa-onnx" and sherpa_onnx_model_path:
+            display_model = (
+                local_sherpa_onnx_display_name(sherpa_onnx_model_path)
+                or Path(sherpa_onnx_model_path).name
+            )
+            display_name = f"sherpa-onnx {display_model}"
         return display_name

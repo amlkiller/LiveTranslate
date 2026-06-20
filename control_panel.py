@@ -43,9 +43,11 @@ from model_manager import (
     get_cache_entries,
     list_local_crispasr_models,
     list_local_faster_whisper_models,
+    list_local_sherpa_onnx_models,
     migrate_funasr_settings,
     normalize_funasr_model_key,
     resolve_custom_crispasr_model,
+    resolve_custom_sherpa_onnx_model,
     resolve_custom_whisper_model,
 )
 from i18n import t, LANGUAGES
@@ -128,21 +130,17 @@ class ControlPanel(QWidget):
 
         self._asr_engine = QComboBox()
         self._asr_engine.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
-        self._asr_engine.addItems(
-            [
-                f"[{t('asr_accurate')}] Whisper (faster-whisper)",
-                f"[{t('asr_fast')}] FunASR",
-                "Anime-Whisper (ja, anime/galgame)",
-                "CrispASR (ggml)",
-            ]
-        )
-        engine_map_idx = {
-            "whisper": 0,
-            "funasr": 1,
-            "anime-whisper": 2,
-            "crispasr": 3,
-        }
-        engine_idx = engine_map_idx.get(s.get("asr_engine"), 0)
+        for label, key in (
+            (f"[{t('asr_accurate')}] Whisper (faster-whisper)", "whisper"),
+            (f"[{t('asr_fast')}] FunASR", "funasr"),
+            ("Anime-Whisper (ja, anime/galgame)", "anime-whisper"),
+            ("CrispASR (ggml)", "crispasr"),
+            ("sherpa-onnx (ONNX)", "sherpa-onnx"),
+        ):
+            self._asr_engine.addItem(label, key)
+        engine_idx = self._asr_engine.findData(s.get("asr_engine"))
+        if engine_idx < 0:
+            engine_idx = self._asr_engine.findData("funasr")
         self._asr_engine.setCurrentIndex(engine_idx)
         asr_layout.addWidget(QLabel(t("label_engine")), 0, 0)
         asr_layout.addWidget(self._asr_engine, 0, 1)
@@ -253,6 +251,45 @@ class ControlPanel(QWidget):
         )
         asr_layout.addWidget(self._crispasr_unified_memory, 7, 1)
 
+        self._sherpa_onnx_provider_label = QLabel(t("label_sherpa_onnx_provider"))
+        self._sherpa_onnx_provider = QComboBox()
+        for label, value in (("Auto", "auto"), ("CPU", "cpu"), ("CUDA", "cuda")):
+            self._sherpa_onnx_provider.addItem(label, value)
+        provider = str(s.get("sherpa_onnx_provider", "auto")).lower()
+        provider_idx = self._sherpa_onnx_provider.findData(provider)
+        if provider_idx >= 0:
+            self._sherpa_onnx_provider.setCurrentIndex(provider_idx)
+        self._sherpa_onnx_provider.currentIndexChanged.connect(
+            self._on_sherpa_onnx_setting_changed
+        )
+        asr_layout.addWidget(self._sherpa_onnx_provider_label, 8, 0)
+        asr_layout.addWidget(self._sherpa_onnx_provider, 8, 1)
+
+        self._sherpa_onnx_threads_label = QLabel(t("label_sherpa_onnx_threads"))
+        self._sherpa_onnx_num_threads = QSpinBox()
+        self._sherpa_onnx_num_threads.setRange(1, 32)
+        self._sherpa_onnx_num_threads.setValue(
+            int(s.get("sherpa_onnx_num_threads", 2) or 2)
+        )
+        self._sherpa_onnx_num_threads.valueChanged.connect(
+            self._on_sherpa_onnx_setting_changed
+        )
+        asr_layout.addWidget(self._sherpa_onnx_threads_label, 9, 0)
+        asr_layout.addWidget(self._sherpa_onnx_num_threads, 9, 1)
+
+        self._sherpa_onnx_decoding_label = QLabel(t("label_sherpa_onnx_decoding"))
+        self._sherpa_onnx_decoding_method = QComboBox()
+        self._sherpa_onnx_decoding_method.addItem("greedy_search", "greedy_search")
+        decoding = str(s.get("sherpa_onnx_decoding_method", "greedy_search"))
+        decoding_idx = self._sherpa_onnx_decoding_method.findData(decoding)
+        if decoding_idx >= 0:
+            self._sherpa_onnx_decoding_method.setCurrentIndex(decoding_idx)
+        self._sherpa_onnx_decoding_method.currentIndexChanged.connect(
+            self._on_sherpa_onnx_setting_changed
+        )
+        asr_layout.addWidget(self._sherpa_onnx_decoding_label, 10, 0)
+        asr_layout.addWidget(self._sherpa_onnx_decoding_method, 10, 1)
+
         self._whisper_pad_label = QLabel(t("label_whisper_padding"))
         self._whisper_pad_seconds = QDoubleSpinBox()
         self._whisper_pad_seconds.setRange(0.0, 5.0)
@@ -266,8 +303,8 @@ class ControlPanel(QWidget):
         self._whisper_pad_seconds.setSuffix(" s")
         self._whisper_pad_seconds.setSpecialValueText(t("whisper_padding_off"))
         self._whisper_pad_seconds.setToolTip(t("whisper_padding_tooltip"))
-        asr_layout.addWidget(self._whisper_pad_label, 8, 0)
-        asr_layout.addWidget(self._whisper_pad_seconds, 8, 1)
+        asr_layout.addWidget(self._whisper_pad_label, 11, 0)
+        asr_layout.addWidget(self._whisper_pad_seconds, 11, 1)
         self._whisper_pad_seconds.valueChanged.connect(self._auto_save)
 
         self._sensevoice_pad_label = QLabel(t("label_sensevoice_padding"))
@@ -283,8 +320,8 @@ class ControlPanel(QWidget):
         self._sensevoice_pad_seconds.setSuffix(" s")
         self._sensevoice_pad_seconds.setSpecialValueText(t("sensevoice_padding_off"))
         self._sensevoice_pad_seconds.setToolTip(t("sensevoice_padding_tooltip"))
-        asr_layout.addWidget(self._sensevoice_pad_label, 9, 0)
-        asr_layout.addWidget(self._sensevoice_pad_seconds, 9, 1)
+        asr_layout.addWidget(self._sensevoice_pad_label, 12, 0)
+        asr_layout.addWidget(self._sensevoice_pad_seconds, 12, 1)
         self._sensevoice_pad_seconds.valueChanged.connect(self._auto_save)
 
         self._audio_device = QComboBox()
@@ -306,8 +343,8 @@ class ControlPanel(QWidget):
                 self._audio_device.setCurrentIndex(idx)
         else:
             self._audio_device.setCurrentIndex(1)  # system default
-        asr_layout.addWidget(QLabel(t("label_audio")), 10, 0)
-        asr_layout.addWidget(self._audio_device, 10, 1)
+        asr_layout.addWidget(QLabel(t("label_audio")), 13, 0)
+        asr_layout.addWidget(self._audio_device, 13, 1)
         self._audio_device.currentIndexChanged.connect(self._auto_save)
 
         self._mic_device = QComboBox()
@@ -328,16 +365,16 @@ class ControlPanel(QWidget):
                 idx = self._mic_device.findText(saved_mic)
                 if idx >= 0:
                     self._mic_device.setCurrentIndex(idx)
-        asr_layout.addWidget(QLabel(t("label_mic")), 11, 0)
-        asr_layout.addWidget(self._mic_device, 11, 1)
+        asr_layout.addWidget(QLabel(t("label_mic")), 14, 0)
+        asr_layout.addWidget(self._mic_device, 14, 1)
         self._mic_device.currentIndexChanged.connect(self._auto_save)
 
         self._hub_combo = QComboBox()
         self._hub_combo.addItems([t("hub_modelscope"), t("hub_huggingface")])
         saved_hub = s.get("hub", "ms")
         self._hub_combo.setCurrentIndex(0 if saved_hub == "ms" else 1)
-        asr_layout.addWidget(QLabel(t("label_hub")), 12, 0)
-        asr_layout.addWidget(self._hub_combo, 12, 1)
+        asr_layout.addWidget(QLabel(t("label_hub")), 15, 0)
+        asr_layout.addWidget(self._hub_combo, 15, 1)
         self._hub_combo.currentIndexChanged.connect(self._auto_save)
 
         self._ui_lang_combo = QComboBox()
@@ -346,8 +383,8 @@ class ControlPanel(QWidget):
 
         saved_lang = s.get("ui_lang", get_lang())
         self._ui_lang_combo.setCurrentIndex(0 if saved_lang == "en" else 1)
-        asr_layout.addWidget(QLabel(t("label_ui_lang")), 13, 0)
-        asr_layout.addWidget(self._ui_lang_combo, 13, 1)
+        asr_layout.addWidget(QLabel(t("label_ui_lang")), 16, 0)
+        asr_layout.addWidget(self._ui_lang_combo, 16, 1)
         self._ui_lang_combo.currentIndexChanged.connect(self._on_ui_lang_changed)
 
         layout.addWidget(asr_group)
@@ -371,7 +408,7 @@ class ControlPanel(QWidget):
         self._whisper_dl_btn.clicked.connect(self._download_whisper)
         whisper_layout.addWidget(self._whisper_dl_btn)
         layout.addWidget(self._whisper_group)
-        self._whisper_group.setVisible(engine_idx == 0)
+        self._whisper_group.setVisible(self._selected_asr_engine() == "whisper")
 
         self._crispasr_group = QGroupBox(t("group_crispasr_model"))
         crispasr_layout = QHBoxLayout(self._crispasr_group)
@@ -386,13 +423,36 @@ class ControlPanel(QWidget):
         self._crispasr_status.setStyleSheet("color: #888; font-size: 11px;")
         crispasr_layout.addWidget(self._crispasr_status, 1)
         layout.addWidget(self._crispasr_group)
-        self._crispasr_group.setVisible(engine_idx == 3)
+        self._crispasr_group.setVisible(self._selected_asr_engine() == "crispasr")
+
+        self._sherpa_onnx_group = QGroupBox(t("group_sherpa_onnx_models"))
+        sherpa_layout = QHBoxLayout(self._sherpa_onnx_group)
+        self._sherpa_onnx_model_combo = QComboBox()
+        saved_sherpa_model = s.get("sherpa_onnx_model", "")
+        self._populate_sherpa_onnx_models(saved_sherpa_model)
+        self._sherpa_onnx_model_combo.currentIndexChanged.connect(
+            self._on_sherpa_onnx_model_changed
+        )
+        sherpa_layout.addWidget(self._sherpa_onnx_model_combo)
+        self._sherpa_onnx_status = QLabel("")
+        self._sherpa_onnx_status.setStyleSheet("color: #888; font-size: 11px;")
+        sherpa_layout.addWidget(self._sherpa_onnx_status, 1)
+        self._sherpa_onnx_refresh_btn = QPushButton(t("btn_refresh_sherpa_onnx_models"))
+        self._sherpa_onnx_refresh_btn.clicked.connect(
+            self._refresh_sherpa_onnx_models
+        )
+        sherpa_layout.addWidget(self._sherpa_onnx_refresh_btn)
+        layout.addWidget(self._sherpa_onnx_group)
+        self._sherpa_onnx_group.setVisible(
+            self._selected_asr_engine() == "sherpa-onnx"
+        )
         self._asr_engine.currentIndexChanged.connect(
             self._on_asr_engine_changed
         )
         self._on_asr_engine_changed(engine_idx)
         self._update_whisper_size_label()
         self._update_crispasr_status()
+        self._update_sherpa_onnx_status()
 
         mode_group = QGroupBox(t("group_vad_mode"))
         mode_layout = QVBoxLayout(mode_group)
@@ -1090,12 +1150,21 @@ class ControlPanel(QWidget):
         """Get the language code from the ASR language combo (stored as userData)."""
         return self._asr_lang.currentData() or "auto"
 
+    def _selected_asr_engine(self) -> str:
+        value = self._asr_engine.currentData()
+        return str(value) if value else "funasr"
+
     def _on_asr_engine_changed(self, index):
-        self._whisper_group.setVisible(index == 0)
-        is_funasr = index == 1
-        is_crispasr = index == 3
+        engine = self._selected_asr_engine()
+        is_whisper = engine == "whisper"
+        is_funasr = engine == "funasr"
+        is_crispasr = engine == "crispasr"
+        is_sherpa_onnx = engine == "sherpa-onnx"
+        self._whisper_group.setVisible(is_whisper)
         if hasattr(self, "_crispasr_group"):
             self._crispasr_group.setVisible(is_crispasr)
+        if hasattr(self, "_sherpa_onnx_group"):
+            self._sherpa_onnx_group.setVisible(is_sherpa_onnx)
         if hasattr(self, "_funasr_model_combo"):
             self._funasr_model_label.setVisible(is_funasr)
             self._funasr_model_combo.setVisible(is_funasr)
@@ -1107,8 +1176,14 @@ class ControlPanel(QWidget):
             self._crispasr_punc_label.setVisible(is_crispasr)
             self._crispasr_punc_model.setVisible(is_crispasr)
             self._crispasr_unified_memory.setVisible(is_crispasr)
+        if hasattr(self, "_sherpa_onnx_provider"):
+            self._sherpa_onnx_provider_label.setVisible(is_sherpa_onnx)
+            self._sherpa_onnx_provider.setVisible(is_sherpa_onnx)
+            self._sherpa_onnx_threads_label.setVisible(is_sherpa_onnx)
+            self._sherpa_onnx_num_threads.setVisible(is_sherpa_onnx)
+            self._sherpa_onnx_decoding_label.setVisible(is_sherpa_onnx)
+            self._sherpa_onnx_decoding_method.setVisible(is_sherpa_onnx)
         if hasattr(self, "_whisper_pad_seconds"):
-            is_whisper = index == 0
             self._whisper_pad_label.setVisible(is_whisper)
             self._whisper_pad_seconds.setVisible(is_whisper)
         if hasattr(self, "_sensevoice_pad_seconds"):
@@ -1164,9 +1239,97 @@ class ControlPanel(QWidget):
         )
         self._auto_save()
 
+    def _selected_sherpa_onnx_model(self) -> str:
+        value = self._sherpa_onnx_model_combo.currentData()
+        return str(value) if value is not None else ""
+
+    def _selected_sherpa_onnx_provider(self) -> str:
+        value = self._sherpa_onnx_provider.currentData()
+        return str(value) if value else "auto"
+
+    def _selected_sherpa_onnx_decoding_method(self) -> str:
+        value = self._sherpa_onnx_decoding_method.currentData()
+        return str(value) if value else "greedy_search"
+
+    def _on_sherpa_onnx_model_changed(self):
+        self._current_settings["sherpa_onnx_model"] = (
+            self._selected_sherpa_onnx_model()
+        )
+        self._update_sherpa_onnx_status()
+        self._auto_save()
+
+    def _on_sherpa_onnx_setting_changed(self):
+        self._current_settings["sherpa_onnx_provider"] = (
+            self._selected_sherpa_onnx_provider()
+        )
+        self._current_settings["sherpa_onnx_num_threads"] = (
+            self._sherpa_onnx_num_threads.value()
+        )
+        self._current_settings["sherpa_onnx_decoding_method"] = (
+            self._selected_sherpa_onnx_decoding_method()
+        )
+        self._auto_save()
+
     def _selected_whisper_model(self) -> str:
         value = self._whisper_size_combo.currentData()
         return str(value) if value else self._whisper_size_combo.currentText()
+
+    def _populate_sherpa_onnx_models(self, saved_value: str):
+        self._sherpa_onnx_model_combo.clear()
+        self._sherpa_onnx_model_combo.addItem(t("sherpa_onnx_model_placeholder"), "")
+
+        local_prefix = t("sherpa_onnx_local_prefix")
+        for item in list_local_sherpa_onnx_models():
+            idx = self._sherpa_onnx_model_combo.count()
+            family = str(item.get("family") or "").replace("_", " ")
+            suffix = f" [{family}]" if family else ""
+            self._sherpa_onnx_model_combo.addItem(
+                f"{local_prefix}: {item['name']}{suffix}", item["path"]
+            )
+            self._sherpa_onnx_model_combo.setItemData(
+                idx, item["path"], Qt.ItemDataRole.ToolTipRole
+            )
+
+        if not saved_value:
+            selected = ""
+        else:
+            selected = resolve_custom_sherpa_onnx_model(saved_value) or saved_value
+        idx = self._sherpa_onnx_model_combo.findData(selected)
+        if idx < 0:
+            idx = self._sherpa_onnx_model_combo.findText(saved_value)
+        if idx < 0 and selected:
+            label = f"{t('sherpa_onnx_missing_local')}: {Path(str(selected)).name}"
+            idx = self._sherpa_onnx_model_combo.count()
+            self._sherpa_onnx_model_combo.addItem(label, selected)
+            self._sherpa_onnx_model_combo.setItemData(
+                idx, str(selected), Qt.ItemDataRole.ToolTipRole
+            )
+        if idx >= 0:
+            self._sherpa_onnx_model_combo.setCurrentIndex(idx)
+
+    def _refresh_sherpa_onnx_models(self):
+        saved = self._selected_sherpa_onnx_model()
+        self._populate_sherpa_onnx_models(saved)
+        self._update_sherpa_onnx_status()
+
+    def _update_sherpa_onnx_status(self):
+        from model_manager import is_asr_cached
+
+        model_key = self._selected_sherpa_onnx_model()
+        if not model_key:
+            if list_local_sherpa_onnx_models():
+                self._sherpa_onnx_status.setText(t("sherpa_onnx_select_model"))
+            else:
+                self._sherpa_onnx_status.setText(t("sherpa_onnx_no_local_models"))
+            self._sherpa_onnx_status.setStyleSheet("color: #888; font-size: 11px;")
+            return
+        cached = is_asr_cached("sherpa-onnx", model_key, self._current_settings.get("hub", "ms"))
+        if cached:
+            self._sherpa_onnx_status.setText(t("sherpa_onnx_local_ready"))
+            self._sherpa_onnx_status.setStyleSheet("color: #4a4; font-size: 11px;")
+        else:
+            self._sherpa_onnx_status.setText(t("sherpa_onnx_invalid_local"))
+            self._sherpa_onnx_status.setStyleSheet("color: #d66; font-size: 11px;")
 
     def _populate_crispasr_models(self, saved_value: str):
         self._crispasr_model_combo.clear()
@@ -1561,15 +1724,7 @@ class ControlPanel(QWidget):
 
     def _apply_settings(self):
         self._current_settings["asr_language"] = self._get_asr_lang_code()
-        engine_map = {
-            0: "whisper",
-            1: "funasr",
-            2: "anime-whisper",
-            3: "crispasr",
-        }
-        self._current_settings["asr_engine"] = engine_map.get(
-            self._asr_engine.currentIndex(), "whisper"
-        )
+        self._current_settings["asr_engine"] = self._selected_asr_engine()
         self._current_settings["funasr_model"] = self._selected_funasr_model()
         self._current_settings["whisper_model_size"] = (
             self._selected_whisper_model()
@@ -1587,6 +1742,18 @@ class ControlPanel(QWidget):
         )
         self._current_settings["crispasr_unified_memory"] = (
             self._crispasr_unified_memory.isChecked()
+        )
+        self._current_settings["sherpa_onnx_model"] = (
+            self._selected_sherpa_onnx_model()
+        )
+        self._current_settings["sherpa_onnx_provider"] = (
+            self._selected_sherpa_onnx_provider()
+        )
+        self._current_settings["sherpa_onnx_num_threads"] = (
+            self._sherpa_onnx_num_threads.value()
+        )
+        self._current_settings["sherpa_onnx_decoding_method"] = (
+            self._selected_sherpa_onnx_decoding_method()
         )
         dev_text = self._asr_device.currentText()
         self._current_settings["asr_device"] = dev_text.split(" (")[0]

@@ -1,6 +1,11 @@
 # LiveTranslate - One-click installer
 # Usage: Double-click install.bat (or run: powershell -ExecutionPolicy Bypass -File install.ps1)
 
+param(
+    [ValidateSet("cpu", "cuda11", "cuda12")]
+    [string]$SherpaOnnxRuntime = "cpu"
+)
+
 $ErrorActionPreference = "Stop"
 $ProjectDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 Set-Location $ProjectDir
@@ -64,6 +69,32 @@ function Install-CrispAsrNativeRuntime {
             Write-Warn "CrispASR native runtime installation failed: $($_.Exception.Message)"
             Write-Warn "CrispASR will not run until libcrispasr/crispasr.dll is installed"
         }
+    }
+}
+
+function Install-SherpaOnnxRuntime {
+    param(
+        [string]$PythonExe,
+        [string]$Runtime
+    )
+
+    Write-Step "Installing sherpa-onnx runtime ($Runtime)..."
+    try {
+        if ($Runtime -eq "cpu") {
+            & $Uv pip install --python $PythonExe "sherpa-onnx>=1.13.3" "sherpa-onnx-bin>=1.13.3"
+        } else {
+            & $Uv pip uninstall --python $PythonExe sherpa-onnx sherpa-onnx-bin sherpa-onnx-core
+            if ($Runtime -eq "cuda11") {
+                & $Uv pip install --python $PythonExe --verbose sherpa-onnx=="1.13.3+cuda" --no-index -f https://k2-fsa.github.io/sherpa/onnx/cuda.html
+            } elseif ($Runtime -eq "cuda12") {
+                & $Uv pip install --python $PythonExe --verbose sherpa-onnx=="1.13.3+cuda12.cudnn9" -f https://k2-fsa.github.io/sherpa/onnx/cuda.html
+            }
+        }
+        if ($LASTEXITCODE -ne 0) { throw "sherpa-onnx install command failed" }
+        Write-Ok "sherpa-onnx runtime installed ($Runtime)"
+    } catch {
+        Write-Warn "sherpa-onnx runtime installation failed: $($_.Exception.Message)"
+        Write-Warn "sherpa-onnx ASR will not run until the Python package is installed"
     }
 }
 
@@ -381,7 +412,10 @@ if (Test-Path ".\repair_torch_metadata.ps1") {
 # ── Step 6: Install CrispASR native runtime ──
 Install-CrispAsrNativeRuntime -PythonExe $Python -UseCuda $HasNvidia
 
-# ── Step 7: Install FunASR (no-deps) ──
+# ── Step 7: Install sherpa-onnx runtime ──
+Install-SherpaOnnxRuntime -PythonExe $Python -Runtime $SherpaOnnxRuntime
+
+# ── Step 8: Install FunASR (no-deps) ──
 Write-Step "Installing FunASR (--no-deps)..."
 
 & $Uv pip install --python $Python funasr --no-deps

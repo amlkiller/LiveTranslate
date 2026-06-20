@@ -9,7 +9,7 @@ audio:
   chunk_duration: 0.032
 
 asr:
-  # ASR engine: whisper, funasr, anime-whisper, crispasr
+  # ASR engine: whisper, funasr, anime-whisper, crispasr, sherpa-onnx
   asr_engine: "funasr"
   # Model size: tiny, base, small, medium, large-v3
   model_size: "medium"
@@ -22,6 +22,16 @@ asr:
   crispasr_device_index: 0
   crispasr_punc_model: "auto"
   crispasr_unified_memory: true
+  # sherpa-onnx local model directory. Empty means user has not selected a model yet.
+  sherpa_onnx_model: ""
+  # sherpa-onnx provider: auto, cpu, cuda. Auto uses CUDA only with a CUDA sherpa-onnx wheel and CUDA ASR device.
+  sherpa_onnx_provider: "auto"
+  sherpa_onnx_num_threads: 2
+  sherpa_onnx_decoding_method: "greedy_search"
+  # Left silence for sherpa-onnx OnlineRecognizer segment wrapper.
+  sherpa_onnx_left_padding_seconds: 0.3
+  # Tail silence for sherpa-onnx OnlineRecognizer segment wrapper.
+  sherpa_onnx_tail_padding_seconds: 0.5
   # Device: cuda or cpu
   device: "cuda"
   # Compute type: float16, int8_float16, int8

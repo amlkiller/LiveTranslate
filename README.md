@@ -21,7 +21,7 @@ Works with any system audio — videos, livestreams, voice chat. No player modif
 ## Features
 
 - **Real-time pipeline**: System audio → VAD → ASR → LLM translation → overlay
-- **Multiple ASR engines**: faster-whisper, SenseVoice, FunASR Nano, Anime-Whisper, CrispASR
+- **Multiple ASR engines**: faster-whisper, SenseVoice, FunASR Nano, Anime-Whisper, CrispASR, sherpa-onnx
 - **Any OpenAI-compatible API**: DeepSeek, Grok, Qwen, GPT, Ollama, vLLM, etc.
 - **Streaming translation display**: Real-time character-by-character translation output
 - **Per-model settings**: Streaming, structured output (JSON), context history, disable thinking
@@ -81,6 +81,7 @@ uv pip install torch torchaudio --index-url https://download.pytorch.org/whl/cpu
 # Dependencies
 uv sync --locked --inexact --no-install-package torch --no-install-package torchaudio
 uv pip install funasr --no-deps
+uv pip install "sherpa-onnx>=1.13.3" "sherpa-onnx-bin>=1.13.3"
 
 # Launch
 .venv\Scripts\python.exe main.py
@@ -95,6 +96,16 @@ uv pip install funasr --no-deps
 1. Setup wizard appears — choose download source (ModelScope / HuggingFace) and cache path
 2. Silero VAD + SenseVoice models download automatically (~1GB)
 3. Main UI appears when ready
+
+## sherpa-onnx Models
+
+LiveTranslate supports sherpa-onnx local ONNX models through Python `OfflineRecognizer` and `OnlineRecognizer` APIs. Online models are currently decoded as a VAD-segment wrapper, not as true partial streaming ASR. `install.ps1` installs the CPU wheel by default. CUDA requires replacing it with a CUDA wheel, for example:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File install.ps1 -SherpaOnnxRuntime cuda12
+```
+
+Download sherpa-onnx ASR model archives from the official sherpa-onnx releases, extract them anywhere under `models/`, then open Settings → VAD/ASR, choose `sherpa-onnx (ONNX)`, click Refresh, and select the local model directory. Online transducer scans accept `encoder.onnx`/`decoder.onnx`/`joiner.onnx` and int8 variants such as `encoder.int8.onnx`/`decoder.int8.onnx`/`joiner.int8.onnx`. PR #3671 Nemotron packages are published with names like `sherpa-onnx-nemotron-3.5-asr-streaming-0.6b-560ms-int8-2026-06-11`; unofficial snapshots must still have ONNX files accepted by the installed sherpa-onnx/ONNX Runtime version. The `onnx-community/nemotron-3.5-asr-streaming-0.6b-onnx-int4` layout is not treated as a sherpa-onnx model in this path.
 
 ## Translation API
 
@@ -126,6 +137,7 @@ main.py                 Entry point & pipeline
 ├── asr_funasr_nano.py  FunASR Nano backend
 ├── asr_anime_whisper.py Anime-Whisper backend (ja anime/galgame)
 ├── asr_crispasr.py     CrispASR ggml runtime backend
+├── asr_sherpa_onnx.py  sherpa-onnx OfflineRecognizer/OnlineRecognizer backend
 ├── translator.py       OpenAI-compatible client (streaming, JSON schema, context)
 ├── model_manager.py    Model download & cache
 ├── subtitle_overlay.py PyQt6 overlay
@@ -140,6 +152,7 @@ main.py                 Entry point & pipeline
 - [FunASR](https://github.com/modelscope/FunASR) — SenseVoice / Fun-ASR-Nano
 - [Anime-Whisper](https://huggingface.co/litagin/anime-whisper) — Japanese anime/galgame ASR
 - CrispASR — ggml C++ ASR runtime hub with GGUF/bin single-file models, used through its Python binding in the ASR worker
+- [sherpa-onnx](https://github.com/k2-fsa/sherpa-onnx) — ONNX ASR runtime used through `OfflineRecognizer` and segment-wrapped `OnlineRecognizer`
 - [Silero VAD](https://github.com/snakers4/silero-vad) — Voice activity detection
 
 ## Star History

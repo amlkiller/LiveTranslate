@@ -254,6 +254,10 @@ class LiveTranslateApp:
                 "crispasr_device_index",
                 "crispasr_punc_model",
                 "crispasr_unified_memory",
+                "sherpa_onnx_model",
+                "sherpa_onnx_provider",
+                "sherpa_onnx_num_threads",
+                "sherpa_onnx_decoding_method",
                 "hub",
             )
         ):
@@ -325,6 +329,13 @@ class LiveTranslateApp:
         settings = self._panel.get_settings() if self._panel else {}
         plan = self._asr_service.prepare_switch(engine_type, settings)
         if plan.already_current:
+            if plan.error:
+                parent = (
+                    self._panel
+                    if self._panel and self._panel.isVisible()
+                    else self._overlay
+                )
+                QMessageBox.warning(parent, t("error_title"), plan.error)
             return
 
         # Reset interim state for the engine boundary. The active worker is
@@ -717,6 +728,10 @@ def main():
     config.setdefault("asr", {})
     config["asr"].setdefault("asr_engine", "funasr")
     config["asr"].setdefault("funasr_model", DEFAULT_FUNASR_MODEL)
+    config["asr"].setdefault("sherpa_onnx_model", "")
+    config["asr"].setdefault("sherpa_onnx_provider", "auto")
+    config["asr"].setdefault("sherpa_onnx_num_threads", 2)
+    config["asr"].setdefault("sherpa_onnx_decoding_method", "greedy_search")
     saved = load_settings(config)
     migrate_funasr_settings(saved)
 
@@ -803,6 +818,11 @@ def main():
             startup_model_key = saved.get(
                 "crispasr_model",
                 config["asr"].get("crispasr_model", ""),
+            )
+        elif current_engine == "sherpa-onnx":
+            startup_model_key = saved.get(
+                "sherpa_onnx_model",
+                config["asr"].get("sherpa_onnx_model", ""),
             )
         else:
             startup_model_key = saved.get("whisper_model_size", config["asr"]["model_size"])
