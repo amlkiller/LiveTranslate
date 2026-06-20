@@ -32,6 +32,8 @@ source_label: "来源:"
 # 控制面板
 window_control_panel: "LiveTranslate - 控制面板"
 tab_vad_asr: "VAD / ASR"
+tab_asr: "ASR"
+tab_vad: "VAD"
 tab_translation: "翻译"
 tab_benchmark: "基准测试"
 tab_cache: "缓存"

@@ -41,7 +41,7 @@ main.py (LiveTranslateApp)
   |-- subtitle_overlay.py  PyQt6 transparent overlay (2-row header: controls + model/lang combos)
   |-- subtitle_window.py   Standalone subtitle window for OBS capture (outlined text, animations)
   |-- subtitle_settings.py Subtitle window settings UI (grid layout, text line editor)
-  |-- control_panel.py     Settings UI (7 tabs: VAD/ASR, Translation, Style, Subtitle, Benchmark, Cache, Changelog)
+  |-- control_panel.py     Settings UI (8 tabs: ASR, VAD, Translation, Style, Subtitle, Benchmark, Cache, Changelog)
   |-- dialogs.py           Setup wizard, model download/load dialogs, ModelEditDialog
   |-- benchmark.py         Translation benchmark (BENCH_SENTENCES, run_benchmark())
   |-- log_window.py        Real-time log viewer

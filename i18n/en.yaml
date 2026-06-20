@@ -32,6 +32,8 @@ source_label: "Source:"
 # Control Panel
 window_control_panel: "LiveTranslate - Control Panel"
 tab_vad_asr: "VAD / ASR"
+tab_asr: "ASR"
+tab_vad: "VAD"
 tab_translation: "Translation"
 tab_benchmark: "Benchmark"
 tab_cache: "Cache"

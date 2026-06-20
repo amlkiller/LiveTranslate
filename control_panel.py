@@ -101,7 +101,8 @@ class ControlPanel(QWidget):
         layout = QVBoxLayout(self)
         tabs = QTabWidget()
 
-        tabs.addTab(self._create_vad_tab(), t("tab_vad_asr"))
+        tabs.addTab(self._create_asr_tab(), t("tab_asr"))
+        tabs.addTab(self._create_vad_tab(), t("tab_vad"))
         tabs.addTab(self._create_translation_tab(), t("tab_translation"))
         tabs.addTab(self._create_style_tab(), t("tab_style"))
         tabs.addTab(self._create_subtitle_tab(), t("tab_subtitle"))
@@ -123,9 +124,9 @@ class ControlPanel(QWidget):
         # Fit initial height based on whisper group visibility
         QTimer.singleShot(0, lambda: self.resize(self.width(), self.sizeHint().height() + 20))
 
-    # ── VAD / ASR Tab ──
+    # ── ASR Tab ──
 
-    def _create_vad_tab(self):
+    def _create_asr_tab(self):
         widget = QWidget()
         layout = QVBoxLayout(widget)
         s = self._current_settings
@@ -569,6 +570,16 @@ class ControlPanel(QWidget):
         self._update_sherpa_onnx_status()
         self._update_parakeet_cpp_model_status()
         self._update_parakeet_cpp_runtime_status()
+
+        layout.addStretch()
+        return widget
+
+    # ── VAD Tab ──
+
+    def _create_vad_tab(self):
+        widget = QWidget()
+        layout = QVBoxLayout(widget)
+        s = self._current_settings
 
         mode_group = QGroupBox(t("group_vad_mode"))
         mode_layout = QVBoxLayout(mode_group)
