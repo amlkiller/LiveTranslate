@@ -414,6 +414,21 @@ class LiveTranslateApp:
             if padding is not None and self._asr_pending_padding is padding:
                 self._asr_pending_padding = _NO_PENDING
 
+    def _load_engine_client(self, config: dict):
+        """Build the ASR backend for a worker config. Local engines run in an isolated
+        worker subprocess (ASRClient); remote-whisper is a thin in-process HTTP client
+        that needs no subprocess isolation (no native deps, no GPU model to load)."""
+        if config.get("engine_type") == "remote-whisper":
+            from asr_remote import RemoteASREngine
+
+            url = config.get("remote_asr_url") or "http://127.0.0.1:8765"
+            engine = RemoteASREngine(server_url=url)
+            language = config.get("language")
+            if language:
+                engine.set_language(language)
+            return engine
+        return self._load_asr_client(config)
+
     def _load_asr_client(self, worker_config: dict) -> ASRClient:
         # request_timeout bounds how long a hung worker can stall the realtime path
         # before it is killed and auto-restarted. VAD caps segments at a few seconds,
@@ -499,11 +514,19 @@ class LiveTranslateApp:
         elif engine_type == "funasr":
             cache_model_key = funasr_model
 
+        remote_asr_url = settings.get(
+            "remote_asr_url",
+            self._config["asr"].get("remote_asr_url", "http://127.0.0.1:8765"),
+        )
+
         compute = self._config["asr"]["compute_type"]
         if engine_type == "whisper":
             signature_model = cache_model_key
         elif engine_type == "funasr":
             signature_model = funasr_model
+        elif engine_type == "remote-whisper":
+            # URL is part of the identity so editing it triggers a reconnect.
+            signature_model = remote_asr_url
         else:
             signature_model = engine_type
         signature = (engine_type, signature_model, device, hub, compute)
@@ -572,6 +595,7 @@ class LiveTranslateApp:
             ),
             "download_root": str((MODELS_DIR / "huggingface" / "hub").resolve()),
             "display_name": display_name,
+            "remote_asr_url": remote_asr_url,
         }
         target_state = {
             "type": engine_type,
@@ -585,6 +609,9 @@ class LiveTranslateApp:
             else self._whisper_model_size,
             "config": worker_config,
             "display_name": display_name,
+            "device_label": (
+                remote_asr_url if engine_type == "remote-whisper" else device
+            ),
         }
 
         if not cached:
@@ -613,6 +640,11 @@ class LiveTranslateApp:
                 "whisper_model_size": self._whisper_model_size,
                 "config": old_config,
                 "display_name": (old_config or {}).get("display_name"),
+                "device_label": (
+                    (old_config or {}).get("remote_asr_url")
+                    if self._asr_type == "remote-whisper"
+                    else self._asr_device
+                ),
             }
             self._asr = None
             self._asr_ready = False
@@ -639,14 +671,14 @@ class LiveTranslateApp:
                 old_asr.shutdown()
                 self._release_memory_caches()
             try:
-                new_asr[0] = self._load_asr_client(worker_config)
+                new_asr[0] = self._load_engine_client(worker_config)
             except Exception as e:
                 load_error[0] = str(e)
                 log.error(f"Failed to load ASR worker: {e}", exc_info=True)
                 if old_config:
                     try:
                         log.info("Restoring previous ASR worker after switch failure")
-                        restored_asr[0] = self._load_asr_client(old_config)
+                        restored_asr[0] = self._load_engine_client(old_config)
                     except Exception as restore_exc:
                         restore_error[0] = str(restore_exc)
                         log.error(
@@ -690,7 +722,9 @@ class LiveTranslateApp:
         if new_asr[0] is not None:
             _activate_asr(new_asr[0], target_state)
             if self._overlay:
-                self._overlay.update_asr_device(f"{display_name} [{device}]")
+                self._overlay.update_asr_device(
+                    f"{display_name} [{target_state['device_label']}]"
+                )
             log.info(f"ASR worker ready: {engine_type} on {device}")
             return
 
@@ -699,7 +733,7 @@ class LiveTranslateApp:
             restored_name = old_state.get("display_name") or old_state.get("type")
             if self._overlay:
                 self._overlay.update_asr_device(
-                    f"{restored_name} [{old_state['device']}]"
+                    f"{restored_name} [{old_state.get('device_label', old_state['device'])}]"
                 )
             QMessageBox.warning(
                 parent,
@@ -838,7 +872,7 @@ class LiveTranslateApp:
         switch happened in the meantime (generation guard). Runs on the ASR thread;
         the load is intentionally done outside _asr_lock. Returns True on activation."""
         try:
-            client = self._load_asr_client(state["config"])
+            client = self._load_engine_client(state["config"])
         except Exception as e:
             log.error(f"ASR worker (re)start failed: {e}", exc_info=True)
             return False
@@ -868,7 +902,9 @@ class LiveTranslateApp:
             return False
         name = state.get("display_name") or state.get("type")
         if self._overlay:
-            self._overlay.update_asr_device(f"{name} [{state['device']}]")
+            self._overlay.update_asr_device(
+                f"{name} [{state.get('device_label', state['device'])}]"
+            )
         return True
 
     def _recover_asr_worker(self, dead_client, reason: str):
